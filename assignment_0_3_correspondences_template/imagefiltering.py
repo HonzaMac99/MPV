@@ -8,20 +8,23 @@ import typing
 def get_gausskernel_size(sigma, force_odd = True):
     ksize = 2 * math.ceil(sigma * 3.0) + 1
     if ksize % 2  == 0 and force_odd:
-        ksize +=1
+        ksize += 1
     return int(ksize)
 
 
 def gaussian1d(x: torch.Tensor, sigma: float) -> torch.Tensor: 
     '''Function that computes values of a (1D) Gaussian with zero mean and variance sigma^2'''
-    out =  torch.zeros(x.shape)
+    a = 1/(sigma*np.sqrt(2*np.pi))
+    out =  a * torch.exp(-torch.pow(x, 2)/(2*np.power(sigma, 2)))
     return out
 
 
 def gaussian_deriv1d(x: torch.Tensor, sigma: float) -> torch.Tensor:  
     '''Function that computes values of a (1D) Gaussian derivative'''
-    out =  torch.zeros(x.shape)
+    a = -1 / (np.power(sigma, 3)*np.sqrt(2*np.pi))
+    out =  a * x * torch.exp(-torch.pow(x, 2)/(2*np.power(sigma, 2)))
     return out
+
 
 def filter2d(x: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
     """Function that convolves a tensor with a kernel.
@@ -40,11 +43,15 @@ def filter2d(x: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
         torch.Tensor: the convolved tensor of same size and numbers of channels
         as the input.
     """
-    out =  x
+    weights = torch.zeros(1, 1, kernel.shape[0], kernel.shape[1])
+    weights[0, 0, ...] = kernel
+
     ## Do not forget about flipping the kernel!
     ## See in details here https://towardsdatascience.com/convolution-vs-correlation-af868b6b4fb5
-    
-    return out
+    weights_flipped = torch.flip(weights, dims=[2, 3])
+
+    x_out = F.conv2d(x, weights_flipped, padding=1)
+    return x_out
 
 def gaussian_filter2d(x: torch.Tensor, sigma: float) -> torch.Tensor:
     r"""Function that blurs a tensor using a Gaussian filter.
@@ -61,8 +68,21 @@ def gaussian_filter2d(x: torch.Tensor, sigma: float) -> torch.Tensor:
 
     """ 
     ksize = get_gausskernel_size(sigma)
-    out = x
-    return out
+    kernel = torch.zeros(1, 1, ksize, ksize)
+    for i in range(ksize):
+        i_dif = i - ksize/2
+        for j in range(ksize):
+            j_dif = j - ksize/2
+
+            a = 1 / (2 * np.pi * np.power(sigma, 2))
+            b = -(np.power(i_dif, 2) + np.power(j_dif, 2)) / (2 * np.power(sigma, 2))
+
+            kernel[..., i, j] = a * np.exp(b)
+
+    kernel_flipped = torch.flip(kernel, dims=[2, 3])
+
+    x_out = F.conv2d(x, kernel_flipped, padding=1)
+    return x_out
 
 
 def spatial_gradient_first_order(x: torch.Tensor, sigma: float) -> torch.Tensor:
@@ -169,3 +189,32 @@ def extract_antializased_affine_patches(input: torch.Tensor,
         cur_img = kornia.geometry.pyrdown(cur_img)
         cur_pyr_level += 1
     return out
+
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    import kornia
+
+    def plot_torch(x, y, *kwargs):
+        plt.plot(x.detach().cpu().numpy(), y.detach().cpu().numpy(), *kwargs)
+        plt.show()
+        return
+
+
+    def imshow_torch(tensor, *kwargs):
+        plt.figure()
+        plt.imshow(kornia.tensor_to_image(tensor), *kwargs)
+        plt.show()
+        return
+
+
+    inp = torch.zeros((1, 1, 32, 32))
+    inp[..., 15, 15] = 1.
+    imshow_torch(inp)
+
+    sigma = 3.0
+    out = gaussian_filter2d(inp, sigma)
+    imshow_torch(out)
+
+
+
