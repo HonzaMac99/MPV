@@ -7,7 +7,7 @@ import typing
 
 def get_gausskernel_size(sigma, force_odd = True):
     ksize = 2 * math.ceil(sigma * 3.0) + 1
-    if ksize % 2  == 0 and force_odd:
+    if ksize % 2 == 0 and force_odd:
         ksize += 1
     return int(ksize)
 
@@ -68,11 +68,12 @@ def gaussian_filter2d(x: torch.Tensor, sigma: float) -> torch.Tensor:
 
     """ 
     ksize = get_gausskernel_size(sigma)
+    pad_size = ksize/2 if ksize % 2 == 0 else int((ksize-1)/2)
     kernel = torch.zeros(1, 1, ksize, ksize)
     for i in range(ksize):
-        i_dif = i - ksize/2
+        i_dif = i - pad_size  # y_coords
         for j in range(ksize):
-            j_dif = j - ksize/2
+            j_dif = j - pad_size  # x_coords
 
             a = 1 / (2 * np.pi * np.power(sigma, 2))
             b = -(np.power(i_dif, 2) + np.power(j_dif, 2)) / (2 * np.power(sigma, 2))
@@ -81,7 +82,9 @@ def gaussian_filter2d(x: torch.Tensor, sigma: float) -> torch.Tensor:
 
     kernel_flipped = torch.flip(kernel, dims=[2, 3])
 
-    x_out = F.conv2d(x, kernel_flipped, padding=1)
+    x_out = torch.zeros(x.shape)
+    for i in range(x.shape[1]):
+        x_out[:, i, :, :] = F.conv2d(x[:, i, :, :], kernel_flipped, padding=pad_size)
     return x_out
 
 
@@ -96,10 +99,31 @@ def spatial_gradient_first_order(x: torch.Tensor, sigma: float) -> torch.Tensor:
         - Output: :math:`(B, C, 2, H, W)`
 
     """
-    b, c, h, w = x.shape
+    bs, cs, h, w = x.shape
     ksize = get_gausskernel_size(sigma)
-    out =  torch.zeros(b,c,2,h,w)
-    return out
+    pad_size = ksize/2 if ksize % 2 == 0 else int((ksize-1)/2)
+
+    kernel = torch.zeros(1, 1, 2, ksize, ksize)
+    for i in range(ksize):
+        i_dif = i - pad_size  # y_coords
+        for j in range(ksize):
+            j_dif = j - pad_size  # x_coords
+
+            a1 = - 1 / (np.power(sigma, 4) * 2 * np.pi) * j_dif  # x direction
+            a2 = - 1 / (np.power(sigma, 4) * 2 * np.pi) * i_dif  # y direction
+
+            b = -(np.power(i_dif, 2) + np.power(j_dif, 2)) / (2 * np.power(sigma, 2))
+
+            kernel[..., 0, i, j] = a1 * np.exp(b)
+            kernel[..., 1, i, j] = a2 * np.exp(b)
+
+    kernel_flipped = torch.flip(kernel, dims=[3, 4])
+
+    x_out = torch.zeros(bs, cs, 2, h, w)
+    for i in range(cs):
+        x_out[:, i, 0, ...] = F.conv2d(x[:, i, ...], kernel_flipped[:, :, 0, ...], padding=pad_size)
+        x_out[:, i, 1, ...] = F.conv2d(x[:, i, ...], kernel_flipped[:, :, 1, ...], padding=pad_size)
+    return x_out
 
 
 def affine(center: torch.Tensor, unitx: torch.Tensor, unity: torch.Tensor) -> torch.Tensor:
@@ -116,8 +140,35 @@ def affine(center: torch.Tensor, unitx: torch.Tensor, unity: torch.Tensor) -> to
     assert center.size(0) == unitx.size(0)
     assert center.size(0) == unity.size(0)
     B = center.size(0)
-    out =  torch.eye(3).unsqueeze(0).repeat(B, 1, 1)
-    return out
+
+    b = torch.vstack((center[:, 0],
+                      center[:, 1],
+                      unitx[:, 0],
+                      unitx[:, 1],
+                      unity[:, 0],
+                      unity[:, 1]))
+
+    # print(b)
+    # print("-----------------")
+    # print(b.reshape(6, B))
+
+    A = np.zeros((6, 6))
+    u = [0, 0, 1, 0, 0, 1]
+    for i in range(3):
+        A[i*2, :]   = np.array([u[i*2], u[i*2+1], 1, 0, 0, 0])
+        A[i*2+1, :] = np.array([0, 0, 0, u[i*2], u[i*2+1], 1])
+
+    # solve Ax = b
+    x = np.linalg.solve(A, b)
+    A = torch.zeros(B, 3, 3)
+    for i in range(B):
+        Ai = np.vstack((x[:3, i].T, x[3:, i].T, np.array([0, 0, 1])))
+        A[i, :, :] = torch.tensor(Ai)
+
+    if B == 1:
+        return A[0, :, :]
+    return A
+
 
 def extract_affine_patches(input: torch.Tensor,
                            A: torch.Tensor,
@@ -137,13 +188,25 @@ def extract_affine_patches(input: torch.Tensor,
         patches: (torch.Tensor) :math:`(N, CH, PS,PS)`
     """
     b,ch,h,w = input.size()
+    print("input size: ", b, ch, h, w, A.size(0))
     num_patches = A.size(0)
     # Functions, which might be useful: torch.meshgrid, torch.nn.functional.grid_sample
     # You are not allowed to use function torch.nn.functional.affine_grid
     # Note, that F.grid_sample expects coordinates in a range from -1 to 1
     # where (-1, -1) - topleft, (1,1) - bottomright and (0,0) center of the image
-    out =  torch.zeros(num_patches, ch, PS, PS)
-    return out
+
+    patches_out = torch.zeros(num_patches, ch, PS, PS)
+    for i in range(PS):  # y coords
+        for j in range(PS):  # x coords
+            for k in range(num_patches):
+                j_dif = j*2/(PS-1) - 1  # we want range (-1, 1)
+                i_dif = i*2/(PS-1) - 1
+
+                inp_c = (A[k] @ np.array([j_dif, i_dif, 1])).type(torch.int64)
+                patches_out[k, :, i, j] = input[0, :, inp_c[1], inp_c[0]]
+                # patches_out[k, :, i, j] = input[0, :, i, j]
+
+    return patches_out
 
 
 def extract_antializased_affine_patches(input: torch.Tensor,
