@@ -15,14 +15,16 @@ def get_gausskernel_size(sigma, force_odd = True):
 def gaussian1d(x: torch.Tensor, sigma: float) -> torch.Tensor: 
     '''Function that computes values of a (1D) Gaussian with zero mean and variance sigma^2'''
     a = 1/(sigma*np.sqrt(2*np.pi))
-    out =  a * torch.exp(-torch.pow(x, 2)/(2*np.power(sigma, 2)))
+    b = -torch.pow(x, 2)/(2*np.power(sigma, 2))
+    out = a * torch.exp(b)
     return out
 
 
 def gaussian_deriv1d(x: torch.Tensor, sigma: float) -> torch.Tensor:  
     '''Function that computes values of a (1D) Gaussian derivative'''
     a = -1 / (np.power(sigma, 3)*np.sqrt(2*np.pi))
-    out =  a * x * torch.exp(-torch.pow(x, 2)/(2*np.power(sigma, 2)))
+    b = -torch.pow(x, 2)/(2*np.power(sigma, 2))
+    out = a * x * torch.exp(b)
     return out
 
 
@@ -43,15 +45,25 @@ def filter2d(x: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
         torch.Tensor: the convolved tensor of same size and numbers of channels
         as the input.
     """
-    weights = torch.zeros(1, 1, kernel.shape[0], kernel.shape[1])
-    weights[0, 0, ...] = kernel
-
     ## Do not forget about flipping the kernel!
     ## See in details here https://towardsdatascience.com/convolution-vs-correlation-af868b6b4fb5
-    weights_flipped = torch.flip(weights, dims=[2, 3])
 
-    x_out = F.conv2d(x, weights_flipped, padding=1)
+    bs, cs, h, w = x.shape
+
+    pad_size_y = int(kernel.shape[0]/2) if (kernel.shape[0] % 2 == 0) else int((kernel.shape[0]-1)/2)
+    pad_size_x = int(kernel.shape[1]/2) if (kernel.shape[1] % 2 == 0) else int((kernel.shape[1]-1)/2)
+
+    kernel = kernel.unsqueeze(0).unsqueeze(0)
+    kernel_flipped = torch.flip(kernel, dims=[2, 3])
+    x_padded = F.pad(x, (pad_size_x, pad_size_x, pad_size_y, pad_size_y), mode='replicate')
+
+    x_out = torch.zeros(x.shape)
+    for i in range(bs):
+        for j in range(cs):
+            # x_out[i, j, :, :] = F.conv2d(x_padded[i:i+1, j:j+1, :, :], kernel_flipped)
+            x_out[i:i+1, j:j+1, :, :] = F.conv2d(x_padded[i:i+1, j:j+1, :, :], kernel_flipped)
     return x_out
+
 
 def gaussian_filter2d(x: torch.Tensor, sigma: float) -> torch.Tensor:
     r"""Function that blurs a tensor using a Gaussian filter.
@@ -66,13 +78,14 @@ def gaussian_filter2d(x: torch.Tensor, sigma: float) -> torch.Tensor:
         - Input: :math:`(B, C, H, W)`
         - Output: :math:`(B, C, H, W)`
 
-    """ 
-    ksize = get_gausskernel_size(sigma)
-    pad_size = ksize/2 if ksize % 2 == 0 else int((ksize-1)/2)
-    kernel = torch.zeros(1, 1, ksize, ksize)
-    for i in range(ksize):
+    """
+    bs, cs, h, w = x.shape
+    k_size = get_gausskernel_size(sigma)
+    pad_size = k_size/2 if (k_size % 2 == 0) else int((k_size-1)/2)
+    kernel = torch.zeros(1, 1, k_size, k_size)
+    for i in range(k_size):
         i_dif = i - pad_size  # y_coords
-        for j in range(ksize):
+        for j in range(k_size):
             j_dif = j - pad_size  # x_coords
 
             a = 1 / (2 * np.pi * np.power(sigma, 2))
@@ -80,11 +93,24 @@ def gaussian_filter2d(x: torch.Tensor, sigma: float) -> torch.Tensor:
 
             kernel[..., i, j] = a * np.exp(b)
 
+
+    # MUCH FASTER using meshgrid instead of for loops!!!
+    kernel_range = np.arange(k_size)-pad_size
+    I_dif, J_dif = np.meshgrid(kernel_range, kernel_range, indexing="ij")
+
+    A =  1 / (2 * np.pi * np.power(sigma, 2))
+    B = -(np.power(I_dif, 2) + np.power(J_dif, 2)) / (2 * np.power(sigma, 2))
+
+    kernel = torch.zeros(1, 1, k_size, k_size)
+    kernel[0, 0] = torch.from_numpy(A * np.exp(B))
+
     kernel_flipped = torch.flip(kernel, dims=[2, 3])
+    x_padded = F.pad(x, (pad_size, pad_size, pad_size, pad_size), mode='replicate')
 
     x_out = torch.zeros(x.shape)
-    for i in range(x.shape[1]):
-        x_out[:, i, :, :] = F.conv2d(x[:, i, :, :], kernel_flipped, padding=pad_size)
+    for i in range(bs):
+        for j in range(cs):
+            x_out[i:i+1, j:j+1, :, :] = F.conv2d(x_padded[i:i+1, j:j+1, :, :], kernel_flipped)
     return x_out
 
 
@@ -100,29 +126,44 @@ def spatial_gradient_first_order(x: torch.Tensor, sigma: float) -> torch.Tensor:
 
     """
     bs, cs, h, w = x.shape
-    ksize = get_gausskernel_size(sigma)
-    pad_size = ksize/2 if ksize % 2 == 0 else int((ksize-1)/2)
+    k_size = get_gausskernel_size(sigma)
+    pad_size = k_size/2 if k_size % 2 == 0 else int((k_size-1)/2)
 
-    kernel = torch.zeros(1, 1, 2, ksize, ksize)
-    for i in range(ksize):
-        i_dif = i - pad_size  # y_coords
-        for j in range(ksize):
-            j_dif = j - pad_size  # x_coords
+    # kernel = torch.zeros(1, 1, 2, k_size, k_size)
+    # for i in range(k_size):
+    #     i_dif = i - pad_size  # y_coords
+    #     for j in range(k_size):
+    #         j_dif = j - pad_size  # x_coords
 
-            a1 = - 1 / (np.power(sigma, 4) * 2 * np.pi) * j_dif  # x direction
-            a2 = - 1 / (np.power(sigma, 4) * 2 * np.pi) * i_dif  # y direction
+    #         a1 = - 1 / (np.power(sigma, 4) * 2 * np.pi) * j_dif  # x direction
+    #         a2 = - 1 / (np.power(sigma, 4) * 2 * np.pi) * i_dif  # y direction
 
-            b = -(np.power(i_dif, 2) + np.power(j_dif, 2)) / (2 * np.power(sigma, 2))
+    #         b = -(np.power(i_dif, 2) + np.power(j_dif, 2)) / (2 * np.power(sigma, 2))
 
-            kernel[..., 0, i, j] = a1 * np.exp(b)
-            kernel[..., 1, i, j] = a2 * np.exp(b)
+    #         kernel[..., 0, i, j] = a1 * np.exp(b)
+    #         kernel[..., 1, i, j] = a2 * np.exp(b)
+
+
+    # MUCH FASTER using meshgrid instead of for loops!!!
+    kernel_range = np.arange(k_size)-pad_size
+    I_dif, J_dif = np.meshgrid(kernel_range, kernel_range, indexing="ij")
+
+    A1 = - 1 / (np.power(sigma, 4) * 2 * np.pi) * J_dif  # x direction
+    A2 = - 1 / (np.power(sigma, 4) * 2 * np.pi) * I_dif  # y direction
+    B = -(np.power(I_dif, 2) + np.power(J_dif, 2)) / (2 * np.power(sigma, 2))
+
+    kernel = torch.zeros(1, 1, 2, k_size, k_size)
+    kernel[:, :, 0, ...] = torch.from_numpy(A1 * np.exp(B))
+    kernel[:, :, 1, ...] = torch.from_numpy(A2 * np.exp(B))
 
     kernel_flipped = torch.flip(kernel, dims=[3, 4])
+    x_padded = F.pad(x, (pad_size, pad_size, pad_size, pad_size), mode='replicate')
 
     x_out = torch.zeros(bs, cs, 2, h, w)
-    for i in range(cs):
-        x_out[:, i, 0, ...] = F.conv2d(x[:, i, ...], kernel_flipped[:, :, 0, ...], padding=pad_size)
-        x_out[:, i, 1, ...] = F.conv2d(x[:, i, ...], kernel_flipped[:, :, 1, ...], padding=pad_size)
+    for i in range(bs):
+        for j in range(cs):
+            x_out[i:i+1, j:j+1, 0, ...] = F.conv2d(x_padded[i:i+1, j:j+1, ...], kernel_flipped[:, :, 0, ...])
+            x_out[i:i+1, j:j+1, 1, ...] = F.conv2d(x_padded[i:i+1, j:j+1, ...], kernel_flipped[:, :, 1, ...])
     return x_out
 
 
@@ -187,25 +228,34 @@ def extract_affine_patches(input: torch.Tensor,
     Returns:
         patches: (torch.Tensor) :math:`(N, CH, PS,PS)`
     """
-    b,ch,h,w = input.size()
-    print("input size: ", b, ch, h, w, A.size(0))
-    num_patches = A.size(0)
     # Functions, which might be useful: torch.meshgrid, torch.nn.functional.grid_sample
     # You are not allowed to use function torch.nn.functional.affine_grid
     # Note, that F.grid_sample expects coordinates in a range from -1 to 1
     # where (-1, -1) - topleft, (1,1) - bottomright and (0,0) center of the image
 
-    patches_out = torch.zeros(num_patches, ch, PS, PS)
+    bs,chs,h,w = input.size()
+
+    assert A.shape[0] == img_idxs.shape[0], "A and idxs dim N do not match!"
+
+    num_patches = A.shape[0]
+
+    patches_out = torch.zeros(num_patches, chs, PS, PS)
+    grids = torch.zeros(1, PS, PS, num_patches, 2)
     for i in range(PS):  # y coords
         for j in range(PS):  # x coords
             for k in range(num_patches):
-                j_dif = j*2/(PS-1) - 1  # we want range (-1, 1)
-                i_dif = i*2/(PS-1) - 1
+                j_dif = (j*2/(PS-1) - 1)*ext  # we want range (-1, 1) * ext
+                i_dif = (i*2/(PS-1) - 1)*ext
 
-                inp_c = (A[k] @ np.array([j_dif, i_dif, 1])).type(torch.int64)
-                patches_out[k, :, i, j] = input[0, :, inp_c[1], inp_c[0]]
-                # patches_out[k, :, i, j] = input[0, :, i, j]
+                p_cs = A[k] @ np.array([j_dif, i_dif, 1])
+                grids[0, i, j, k, :] = torch.tensor([p_cs[0]/(w-1)*2 - 1, p_cs[1]/(h-1)*2 - 1])
+                # patches_out[k, :, i, j] = input[:, :, int(np.round(p_cs[1])), int(np.round(p_cs[0]))]
 
+    for i in range(num_patches):
+        idx = img_idxs[i]
+        assert idx < bs, "img_idxs must be always smaller than bs"
+        grid = grids[:, :, :, i, :]
+        patches_out[i, :, :, :] = F.grid_sample(input[idx:idx+1], grid, mode='bilinear', padding_mode='border')
     return patches_out
 
 
