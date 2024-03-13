@@ -39,6 +39,8 @@ def harris_response(x: torch.Tensor,
       - Input: :math:`(B, C, H, W)`
       - Output: :math:`(B, C, H, W)`
     """
+
+    x2 = spatial_gradient_first_order(x, sigma_i)
     out = torch.zeros_like(x)
     return out
 
