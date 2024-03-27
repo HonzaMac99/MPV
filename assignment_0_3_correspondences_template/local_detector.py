@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import typing
 from imagefiltering import * 
 
+
 def harris_response(x: torch.Tensor,
                      sigma_d: float,
                      sigma_i: float,
@@ -40,7 +41,17 @@ def harris_response(x: torch.Tensor,
       - Output: :math:`(B, C, H, W)`
     """
 
-    x2 = spatial_gradient_first_order(x, sigma_i)
+    G = spatial_gradient_first_order(x, sigma_i)
+    Gx = G[:, :, 0]
+    Gy = G[:, :, 1]
+    Gi = gaussian_filter2d(x, sigma_i)
+
+    M = [[Gi * Gx@Gx, Gi * Gx@Gy],
+         [Gi * Gy@Gx, Gi * Gy@Gy]]
+
+    k = 0.05  # [0.04, 0.06]
+    R = np.linalg.det(M) - k * np.trace(M)
+
     out = torch.zeros_like(x)
     return out
 

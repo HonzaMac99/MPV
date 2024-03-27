@@ -143,7 +143,6 @@ def spatial_gradient_first_order(x: torch.Tensor, sigma: float) -> torch.Tensor:
     #         kernel[..., 0, i, j] = a1 * np.exp(b)
     #         kernel[..., 1, i, j] = a2 * np.exp(b)
 
-
     # MUCH FASTER using meshgrid instead of for loops!!!
     kernel_range = np.arange(k_size)-pad_size
     I_dif, J_dif = np.meshgrid(kernel_range, kernel_range, indexing="ij")
