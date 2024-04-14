@@ -3,7 +3,10 @@ import math
 import torch
 import torch.nn.functional as F
 import typing
-from imagefiltering import * 
+import kornia
+import cv2
+from imagefiltering import *
+
 
 
 def harris_response(x: torch.Tensor,
@@ -46,11 +49,14 @@ def harris_response(x: torch.Tensor,
     Gy = G[:, :, 1]
     Gi = gaussian_filter2d(x, sigma_i)
 
-    M = [[Gi * Gx@Gx, Gi * Gx@Gy],
-         [Gi * Gy@Gx, Gi * Gy@Gy]]
+    Gx2 = Gx*Gx
+    Gy2 = Gy*Gy
+    GxGy = Gx*Gy
 
-    k = 0.05  # [0.04, 0.06]
-    R = np.linalg.det(M) - k * np.trace(M)
+    M = [[Gi *  Gx2, Gi * GxGy],
+         [Gi * GxGy, Gi * Gy2 ]]
+
+    R = np.linalg.det(M) - alpha * np.trace(M)**2
 
     out = torch.zeros_like(x)
     return out
@@ -163,3 +169,44 @@ def scalespace_harris(x: torch.Tensor,
     out = torch.zeros(0,3)
     return out
 
+
+if __name__ == "__main__":
+    # Visualization functions
+    def plot_torch(x, y, *kwargs):
+        plt.plot(x.detach().cpu().numpy(), y.detach().cpu().numpy(), *kwargs)
+        return
+
+
+    def imshow_torch(tensor, figsize=(8, 6), *kwargs):
+        plt.figure(figsize=figsize)
+        plt.imshow(kornia.tensor_to_image(tensor), *kwargs)
+        return
+
+
+    def imshow_torch_channels(tensor, dim=1, *kwargs):
+        num_ch = tensor.size(dim)
+        fig = plt.figure(figsize=(num_ch * 5, 5))
+        tensor_splitted = torch.split(tensor, 1, dim=dim)
+        for i in range(num_ch):
+            fig.add_subplot(1, num_ch, i + 1)
+            plt.imshow(kornia.tensor_to_image(tensor_splitted[i].squeeze(dim)), *kwargs)
+        return
+
+
+    def timg_load(fname, to_gray=True):
+        img = cv2.imread(fname)
+        with torch.no_grad():
+            timg = kornia.image_to_tensor(img, False).float()
+            if to_gray:
+                timg = kornia.color.bgr_to_grayscale(timg)
+            else:
+                timg = kornia.color.bgr_to_rgb(timg)
+        return timg
+
+    img_corners = timg_load('corners.png')
+
+    resp_small = harris_response(img_corners, 1.6, 2.0, 0.04)
+    resp_big = harris_response(img_corners, 7., 9., 0.04)
+
+    imshow_torch_channels(torch.cat([resp_small,
+                                     resp_big], dim=0), 0)
