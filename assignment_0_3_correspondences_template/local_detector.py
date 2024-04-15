@@ -3,16 +3,10 @@ import math
 import torch
 import torch.nn.functional as F
 import typing
-import kornia
-import cv2
 from imagefiltering import *
 
 
-
-def harris_response(x: torch.Tensor,
-                     sigma_d: float,
-                     sigma_i: float,
-                     alpha: float = 0.04)-> torch.Tensor:
+def harris_response(x: torch.Tensor, sigma_d: float, sigma_i: float, alpha: float = 0.04) -> torch.Tensor:
     r"""Computes the Harris cornerness function.The response map is computed according the following formulation:
 
     .. math::
@@ -44,22 +38,25 @@ def harris_response(x: torch.Tensor,
       - Output: :math:`(B, C, H, W)`
     """
 
-    G = spatial_gradient_first_order(x, sigma_i)
+    G = spatial_gradient_first_order(x, sigma_d)
     Gx = G[:, :, 0]
     Gy = G[:, :, 1]
-    Gi = gaussian_filter2d(x, sigma_i)
 
-    Gx2 = Gx*Gx
-    Gy2 = Gy*Gy
-    GxGy = Gx*Gy
+    Gx2 = gaussian_filter2d(Gx*Gx, sigma_i)
+    Gy2 = gaussian_filter2d(Gy*Gy, sigma_i)
+    GxGy = gaussian_filter2d(Gx*Gy, sigma_i)  # GxGy = GyGx
 
-    M = [[Gi *  Gx2, Gi * GxGy],
-         [Gi * GxGy, Gi * Gy2 ]]
+    # M = [[ Gx2, GxGy],
+    #      [GyGx,  Gy2]]
 
-    R = np.linalg.det(M) - alpha * np.trace(M)**2
+    det_M = Gx2*Gy2 - GxGy**2
+    trace_M = Gx2 + Gy2
 
-    out = torch.zeros_like(x)
-    return out
+    # det_M = gaussian_filter2d((Gx**2)*(Gy**2) - (Gx*Gy)**2, sigma_i)
+    # trace_M = gaussian_filter2d(Gx*Gx + Gy*Gy, sigma_i)
+
+    R = det_M - alpha * trace_M**2
+    return R
 
 
 def nms2d(x: torch.Tensor, th: float = 0):
@@ -94,7 +91,9 @@ def harris(x: torch.Tensor, sigma_d: float, sigma_i: float, th: float = 0):
       - Output: :math:`(N, 4)`, where N - total number of maxima and 4 is (b,c,h,w) coordinates
     """
     # To get coordinates of the responces, you can use torch.nonzero function
-    out = torch.zeros(0,2)
+    x_harris = harris_response(x, sigma_d, sigma_i)
+    x_detect = x_harris > th
+    out = torch.nonzero(x_detect)
     return out
 
 
@@ -171,6 +170,10 @@ def scalespace_harris(x: torch.Tensor,
 
 
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    import kornia
+    import cv2
+
     # Visualization functions
     def plot_torch(x, y, *kwargs):
         plt.plot(x.detach().cpu().numpy(), y.detach().cpu().numpy(), *kwargs)
@@ -210,3 +213,7 @@ if __name__ == "__main__":
 
     imshow_torch_channels(torch.cat([resp_small,
                                      resp_big], dim=0), 0)
+    plt.show()
+
+    keypoint_locations = harris(img_corners, 1.6, 2.0, 0.0001)
+    print(keypoint_locations)
