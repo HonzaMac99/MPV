@@ -71,7 +71,16 @@ def nms2d(x: torch.Tensor, th: float = 0):
       - Input: :math:`(B, C, H, W)`
       - Output: :math:`(B, C, H, W)`
     """
+    h, w = x.shape[2:]
     out = torch.zeros_like(x)
+    for i in range(1, h-1):
+        for j in range(1, w-1):
+            patch = x[..., i-1:i+2, j-1:j+2]
+            mid_val = patch[..., 1, 1].item()
+            patch[..., 1, 1] = 0                        # omit the middle in the maximisation
+            if mid_val > max(th, patch.max().item()):
+                out[..., i, j] = mid_val
+            patch[..., 1, 1] = mid_val                  # return the orig val to x
     return out
 
 
@@ -92,8 +101,8 @@ def harris(x: torch.Tensor, sigma_d: float, sigma_i: float, th: float = 0):
     """
     # To get coordinates of the responces, you can use torch.nonzero function
     x_harris = harris_response(x, sigma_d, sigma_i)
-    x_detect = x_harris > th
-    out = torch.nonzero(x_detect)
+    x_harris_nms2d = nms2d(x_harris, th)
+    out = torch.nonzero(x_harris_nms2d)
     return out
 
 
@@ -112,8 +121,18 @@ def create_scalespace(x: torch.Tensor, n_levels: int, sigma_step: float):
     """
 
     b, ch, h, w = x.size()
-    out = torch.zeros(b, ch, n_levels, h, w), [1.0 for x in range(n_levels)]
-    return out
+    out = torch.zeros(b, ch, n_levels, h, w)
+    sigmas = []
+
+    sigma_d = 1
+    sigmas.append(sigma_d)
+    out[:, :, 0, :, :] = x
+    for i in range(1, n_levels):
+        sigma_d *= sigma_step
+        sigmas.append(sigma_d)
+        out[:, :, i, :, :] = gaussian_filter2d(x, sigma_d)
+
+    return out, sigmas
 
 
 def nms3d(x: torch.Tensor, th: float = 0):
@@ -125,9 +144,18 @@ def nms3d(x: torch.Tensor, th: float = 0):
       - Input: :math:`(B, C, D, H, W)`
       - Output: :math:`(B, C, D, H, W)`
     """
+    d, h, w = x.shape[2:]
     out = torch.zeros_like(x)
+    for i in range(1, d-1):
+        for j in range(1, h-1):
+            for k in range(1, w-1):
+                patch = x[..., i-1:i+2, j-1:j+2, k-1:k+2]
+                mid_val = patch[..., 1, 1, 1]
+                patch[..., 1, 1, 1] = 0                 # omit the middle in the maximisation
+                if mid_val > max(th, patch.max()):
+                    out[..., i, j, k] = mid_val
+                patch[..., 1, 1, 1] = mid_val           # return the orig val to x
     return out
-
 
 
 def scalespace_harris_response(x: torch.Tensor,
@@ -143,8 +171,13 @@ def scalespace_harris_response(x: torch.Tensor,
       - Input: :math:`(B, C, H, W)`
       - Output: :math:`(B, C, N_LEVELS, H, W)`, List(floats)
     """
-    out = torch.zeros_like(x)
-    return out
+
+    sigma_i = 0.1
+    ss, sigmas = create_scalespace(x, n_levels, sigma_step)
+    out = torch.zeros_like(ss)
+    for i, sigma_d in enumerate(sigmas):
+        out[:, :, i, :, :] = sigma_d**2 * harris_response(x, sigma_d, sigma_i)
+    return out, sigmas
 
 
 
@@ -165,7 +198,13 @@ def scalespace_harris(x: torch.Tensor,
     """
     # To get coordinates of the responces, you can use torch.nonzero function
     # Don't forget to convert scale index to scale value with use of sigma
-    out = torch.zeros(0,3)
+
+    x_harris, sigmas = scalespace_harris_response(x, n_levels, sigma_step)
+    print("got x_harris")
+    x_harris_nms3d = nms3d(x_harris, th)
+    print("got nms3d")
+    out = torch.nonzero(x_harris_nms3d)
+    print(out)
     return out
 
 
@@ -208,12 +247,41 @@ if __name__ == "__main__":
 
     img_corners = timg_load('corners.png')
 
-    resp_small = harris_response(img_corners, 1.6, 2.0, 0.04)
-    resp_big = harris_response(img_corners, 7., 9., 0.04)
+    # resp_small = harris_response(img_corners, 1.6, 2.0, 0.04)
+    # resp_big = harris_response(img_corners, 7., 9., 0.04)
 
-    imshow_torch_channels(torch.cat([resp_small,
-                                     resp_big], dim=0), 0)
+    # imshow_torch_channels(torch.cat([resp_small,
+    #                                  resp_big], dim=0), 0)
+    # plt.show()
+
+    # # keypoint_locations = harris(img_corners, 1.6, 2.0, 0.0001)
+    # # print(keypoint_locations)
+
+    # nmsed_harris = nms2d(resp_small, 1e-6)
+
+    # imshow_torch(nmsed_harris)
+
+    # plt.show()
+
+    def visualize_detections(img, keypoint_locations, img_idx=0, increase_scale=1.):
+        # Select keypoints relevant to image
+        kpts = [cv2.KeyPoint(b_ch_sc_y_x[4].item(),
+                             b_ch_sc_y_x[3].item(),
+                             increase_scale * b_ch_sc_y_x[2].item())
+                for b_ch_sc_y_x in keypoint_locations if b_ch_sc_y_x[0].item() == img_idx]
+        vis_img = None
+        vis_img = cv2.drawKeypoints(kornia.tensor_to_image(img).astype(np.uint8),
+                                    kpts,
+                                    vis_img,
+                                    flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+        plt.figure(figsize=(12, 10))
+        plt.imshow(vis_img)
+        return
+
+
+    with torch.no_grad():
+        keypoint_locations = scalespace_harris(img_corners, 0.00001)
+
+    visualize_detections(img_corners * 255., keypoint_locations, increase_scale=8.0)
+
     plt.show()
-
-    keypoint_locations = harris(img_corners, 1.6, 2.0, 0.0001)
-    print(keypoint_locations)
