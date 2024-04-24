@@ -135,6 +135,32 @@ def create_scalespace(x: torch.Tensor, n_levels: int, sigma_step: float):
     return out, sigmas
 
 
+def get_shifted_x(x, x_shift, y_shift, z_shift=0):
+    if x_shift == 1:
+        x = x[..., -1:] + x[..., :-1]
+    elif x_shift == -1:
+        x = x[..., 1:] + x[..., :1]
+    else:
+        print("Wrong x_shift value: ", x_shift)
+
+    if y_shift == 1:
+        x = x[..., -1:, :] + x[..., :-1, :]
+    elif y_shift == -1:
+        x = x[..., 1:, :] + x[..., :1, :]
+    else:
+        print("Wrong y_shift value:", y_shift)
+
+    if z_shift == 1:
+        x = x[..., -1:, :, :] + x[..., :-1, :, :]
+    elif z_shift == -1:
+        x = x[..., 1:, :, :] + x[..., :1, :, :]
+    elif z_shift != 0:
+        print("Wrong z_shift value: ", z_shift)
+
+    return x
+
+
+
 def nms3d(x: torch.Tensor, th: float = 0):
     r"""Applies non maxima suppression to the scale space feature map in 3x3x3 neighborhood.
     Args:
@@ -245,6 +271,23 @@ if __name__ == "__main__":
                 timg = kornia.color.bgr_to_rgb(timg)
         return timg
 
+
+    def visualize_detections(img, keypoint_locations, img_idx=0, increase_scale=1.):
+        # Select keypoints relevant to image
+        kpts = [cv2.KeyPoint(b_ch_sc_y_x[4].item(),
+                             b_ch_sc_y_x[3].item(),
+                             increase_scale * b_ch_sc_y_x[2].item())
+                for b_ch_sc_y_x in keypoint_locations if b_ch_sc_y_x[0].item() == img_idx]
+        vis_img = None
+        vis_img = cv2.drawKeypoints(kornia.tensor_to_image(img).astype(np.uint8),
+                                    kpts,
+                                    vis_img,
+                                    flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+        plt.figure(figsize=(12, 10))
+        plt.imshow(vis_img)
+        return
+
+
     img_corners = timg_load('corners.png')
 
     # resp_small = harris_response(img_corners, 1.6, 2.0, 0.04)
@@ -262,21 +305,7 @@ if __name__ == "__main__":
     # imshow_torch(nmsed_harris)
 
     # plt.show()
-
-    def visualize_detections(img, keypoint_locations, img_idx=0, increase_scale=1.):
-        # Select keypoints relevant to image
-        kpts = [cv2.KeyPoint(b_ch_sc_y_x[4].item(),
-                             b_ch_sc_y_x[3].item(),
-                             increase_scale * b_ch_sc_y_x[2].item())
-                for b_ch_sc_y_x in keypoint_locations if b_ch_sc_y_x[0].item() == img_idx]
-        vis_img = None
-        vis_img = cv2.drawKeypoints(kornia.tensor_to_image(img).astype(np.uint8),
-                                    kpts,
-                                    vis_img,
-                                    flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
-        plt.figure(figsize=(12, 10))
-        plt.imshow(vis_img)
-        return
+    # ----------------------------------------------------------------------------
 
 
     with torch.no_grad():
