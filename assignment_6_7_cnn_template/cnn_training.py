@@ -16,9 +16,25 @@ def get_dataset_statistics(dataset: torch.utils.data.Dataset) -> Tuple[List, Lis
     Return:
         tuple of Lists of floats. len of each list should equal to number of input image/tensor channels
     '''
-    mean = [0., 0., 0.]
-    std = [1.0, 1.0, 1.0]
-    return mean, std
+
+    mean_arr = []
+    std_arr = []
+
+    b = len(dataset)
+    c, h, w = dataset[0][0].shape
+    for i in range(b):
+        mean_i = [0., 0., 0.]
+        std_i = [1.0, 1.0, 1.0]
+        for j in range(c):
+            mean_i[j] = dataset[i][0][j].mean()
+            std_i[j] = dataset[i][0][j].std()
+        mean_arr.append(mean_i)
+        std_arr.append(std_i)
+
+    mean = torch.Tensor(mean_arr).mean(axis=0)
+    std = torch.Tensor(std_arr).mean(axis=0)
+
+    return mean.tolist(), std.tolist()
 
 
 class SimpleCNN(nn.Module):
@@ -109,7 +125,7 @@ def validate(model: torch.nn.Module,
              device: torch.device = torch.device('cpu'),
              additional_params: Dict = {}) -> Tuple[float, Dict]:
     '''Function, which runs the module over validation set and returns accuracy'''
-    print ("Starting validation")
+    print("Starting validation")
     acc = 0
     loss = 0
     do_acc = False
@@ -138,3 +154,51 @@ def get_predictions(model: torch.nn.Module, test_dl: torch.utils.data.DataLoader
     '''Function, which predicts class indexes for image in data loader. Ouput shape: [N, 1], where N is number of image in the dataset'''
     out = torch.zeros(len(test_dl)).long()
     return out
+
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    import numpy as np
+    import cv2
+
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    import torchvision as tv
+    import kornia as K
+    from tqdm import tqdm_notebook as tqdm
+    from time import time
+    import torchvision.transforms as tfms
+
+
+    def imshow_torch(tensor, figsize=(8, 6), *kwargs):
+        plt.figure(figsize=figsize)
+        plt.imshow(K.tensor_to_image(tensor), *kwargs)
+        return
+
+
+    def imshow_torch_channels(tensor, dim=1, *kwargs):
+        num_ch = tensor.size(dim)
+        fig = plt.figure(figsize=(num_ch * 5, 5))
+        tensor_splitted = torch.split(tensor, 1, dim=dim)
+        for i in range(num_ch):
+            fig.add_subplot(1, num_ch, i + 1)
+            plt.imshow(K.tensor_to_image(tensor_splitted[i].squeeze(dim)), *kwargs)
+        return
+
+
+    train_transform = tfms.Compose([tfms.Resize((128, 128)),
+                                    tfms.ToTensor()])
+
+    ImageNette_for_statistics = tv.datasets.ImageFolder('imagenette2-160/train',
+                                                        transform=train_transform)
+
+    for i in range(3):
+        imshow_torch(ImageNette_for_statistics[i][0], figsize=(3, 3))
+
+
+    mean, std = get_dataset_statistics(ImageNette_for_statistics)
+    #mean, std = [0.46248055, 0.4579692, 0.42981696], [0.27553096, 0.27220666, 0.295335]
+    print (mean, std)
