@@ -6,6 +6,26 @@ import typing
 from imagefiltering import *
 
 
+def x_greater_in_dir(x, dir):
+    if len(dir) == 2:
+        x_dir, y_dir = dir
+        z_dir = 0
+    else:
+        x_dir, y_dir, z_dir = dir
+
+    assert x_dir in [-1, 0, 1], f"Wrong x_dir value: {x_dir}"
+    assert y_dir in [-1, 0, 1], f"Wrong y_dir value: {y_dir}"
+    assert z_dir in [-1, 0, 1], f"Wrong z_dir value: {z_dir}"
+
+    new_x = x.clone()
+    new_x = torch.cat((new_x[..., x_dir:], new_x[..., :x_dir]), -1)
+    new_x = torch.cat((new_x[..., y_dir:, :], new_x[..., :y_dir, :]), -2)
+    new_x = torch.cat((new_x[..., z_dir:, :, :], new_x[..., :z_dir, :, :]), -3)
+
+    mask = x > new_x
+    return mask
+
+
 def harris_response(x: torch.Tensor, sigma_d: float, sigma_i: float, alpha: float = 0.04) -> torch.Tensor:
     r"""Computes the Harris cornerness function.The response map is computed according the following formulation:
 
@@ -37,7 +57,7 @@ def harris_response(x: torch.Tensor, sigma_d: float, sigma_i: float, alpha: floa
       - Input: :math:`(B, C, H, W)`
       - Output: :math:`(B, C, H, W)`
     """
-
+    # sigma_d = sigma_d*1.3  # correct the sigma to match reference
     G = spatial_gradient_first_order(x, sigma_d)
     Gx = G[:, :, 0]
     Gy = G[:, :, 1]
@@ -51,9 +71,6 @@ def harris_response(x: torch.Tensor, sigma_d: float, sigma_i: float, alpha: floa
 
     det_M = Gx2*Gy2 - GxGy**2
     trace_M = Gx2 + Gy2
-
-    # det_M = gaussian_filter2d((Gx**2)*(Gy**2) - (Gx*Gy)**2, sigma_i)
-    # trace_M = gaussian_filter2d(Gx*Gx + Gy*Gy, sigma_i)
 
     R = det_M - alpha * trace_M**2
     return R
@@ -71,16 +88,24 @@ def nms2d(x: torch.Tensor, th: float = 0):
       - Input: :math:`(B, C, H, W)`
       - Output: :math:`(B, C, H, W)`
     """
-    h, w = x.shape[2:]
-    out = torch.zeros_like(x)
-    for i in range(1, h-1):
-        for j in range(1, w-1):
-            patch = x[..., i-1:i+2, j-1:j+2]
-            mid_val = patch[..., 1, 1].item()
-            patch[..., 1, 1] = 0                        # omit the middle in the maximisation
-            if mid_val > max(th, patch.max().item()):
-                out[..., i, j] = mid_val
-            patch[..., 1, 1] = mid_val                  # return the orig val to x
+    # h, w = x.shape[2:]
+    # for i in range(1, h-1):
+    #     for j in range(1, w-1):
+    #         patch = x[..., i-1:i+2, j-1:j+2]
+    #         mid_val = patch[..., 1, 1].item()
+    #         patch[..., 1, 1] = 0                        # omit the middle in the maximisation
+    #         if mid_val > max(th, patch.max().item()):
+    #             out[..., i, j] = mid_val
+    #         patch[..., 1, 1] = mid_val                  # return the orig val to x
+
+    # MUCH faster with matrix operations:
+    vals = [1, 0, -1]
+    dirs = [[x, y] for x in vals for y in vals if (x != 0 or y != 0)]
+    shifts = [x_greater_in_dir(x, dir) for dir in dirs]
+    mask = (x > th)
+    for shift in shifts:
+        mask *= shift  # logical AND
+    out = mask * x
     return out
 
 
@@ -135,32 +160,6 @@ def create_scalespace(x: torch.Tensor, n_levels: int, sigma_step: float):
     return out, sigmas
 
 
-def get_shifted_x(x, x_shift, y_shift, z_shift=0):
-    if x_shift == 1:
-        x = x[..., -1:] + x[..., :-1]
-    elif x_shift == -1:
-        x = x[..., 1:] + x[..., :1]
-    else:
-        print("Wrong x_shift value: ", x_shift)
-
-    if y_shift == 1:
-        x = x[..., -1:, :] + x[..., :-1, :]
-    elif y_shift == -1:
-        x = x[..., 1:, :] + x[..., :1, :]
-    else:
-        print("Wrong y_shift value:", y_shift)
-
-    if z_shift == 1:
-        x = x[..., -1:, :, :] + x[..., :-1, :, :]
-    elif z_shift == -1:
-        x = x[..., 1:, :, :] + x[..., :1, :, :]
-    elif z_shift != 0:
-        print("Wrong z_shift value: ", z_shift)
-
-    return x
-
-
-
 def nms3d(x: torch.Tensor, th: float = 0):
     r"""Applies non maxima suppression to the scale space feature map in 3x3x3 neighborhood.
     Args:
@@ -170,17 +169,26 @@ def nms3d(x: torch.Tensor, th: float = 0):
       - Input: :math:`(B, C, D, H, W)`
       - Output: :math:`(B, C, D, H, W)`
     """
-    d, h, w = x.shape[2:]
-    out = torch.zeros_like(x)
-    for i in range(1, d-1):
-        for j in range(1, h-1):
-            for k in range(1, w-1):
-                patch = x[..., i-1:i+2, j-1:j+2, k-1:k+2]
-                mid_val = patch[..., 1, 1, 1]
-                patch[..., 1, 1, 1] = 0                 # omit the middle in the maximisation
-                if mid_val > max(th, patch.max()):
-                    out[..., i, j, k] = mid_val
-                patch[..., 1, 1, 1] = mid_val           # return the orig val to x
+    # d, h, w = x.shape[2:]
+    # out = torch.zeros_like(x)
+    # for i in range(1, d-1):
+    #     for j in range(1, h-1):
+    #         for k in range(1, w-1):
+    #             patch = x[..., i-1:i+2, j-1:j+2, k-1:k+2]
+    #             mid_val = patch[..., 1, 1, 1]
+    #             patch[..., 1, 1, 1] = 0                 # omit the middle in the maximisation
+    #             if mid_val > max(th, patch.max()):
+    #                 out[..., i, j, k] = mid_val
+    #             patch[..., 1, 1, 1] = mid_val           # return the orig val to x
+
+    # MUCH faster with matrix operations:
+    vals = [1, 0, -1]
+    dirs = [[x, y, z] for x in vals for y in vals for z in vals if (x != 0 or y != 0 or z != 0)]
+    shifts = [x_greater_in_dir(x, dir) for dir in dirs]
+    mask = (x > th)
+    for shift in shifts:
+        mask *= shift  # logical AND
+    out = mask * x
     return out
 
 
@@ -198,13 +206,15 @@ def scalespace_harris_response(x: torch.Tensor,
       - Output: :math:`(B, C, N_LEVELS, H, W)`, List(floats)
     """
 
-    sigma_i = 0.1
-    ss, sigmas = create_scalespace(x, n_levels, sigma_step)
+    sigma_i = 2.0  # for 3x3 gaussian kernel
+    ss, sigmas_d = create_scalespace(x, n_levels, sigma_step)
     out = torch.zeros_like(ss)
-    for i, sigma_d in enumerate(sigmas):
-        out[:, :, i, :, :] = sigma_d**2 * harris_response(x, sigma_d, sigma_i)
-    return out, sigmas
-
+    for i in range(n_levels):
+        x_blurred = ss[:, :, i, :, :]
+        h_response = harris_response(x_blurred, sigmas_d[i], sigma_i)
+        out[:, :, i, :, :] = sigmas_d[i]**2 * h_response
+        print(f"Got {i}-th harris response")
+    return out, sigmas_d
 
 
 def scalespace_harris(x: torch.Tensor,
@@ -290,15 +300,16 @@ if __name__ == "__main__":
 
     img_corners = timg_load('corners.png')
 
-    # resp_small = harris_response(img_corners, 1.6, 2.0, 0.04)
-    # resp_big = harris_response(img_corners, 7., 9., 0.04)
+    resp_small = harris_response(img_corners, 1.6, 2.0, 0.04)
+    resp_big   = harris_response(img_corners,  7.,  9., 0.04)
 
     # imshow_torch_channels(torch.cat([resp_small,
     #                                  resp_big], dim=0), 0)
+
     # plt.show()
 
-    # # keypoint_locations = harris(img_corners, 1.6, 2.0, 0.0001)
-    # # print(keypoint_locations)
+    # keypoint_locations = harris(img_corners, 1.6, 2.0, 0.0001)
+    # print(keypoint_locations)
 
     # nmsed_harris = nms2d(resp_small, 1e-6)
 
