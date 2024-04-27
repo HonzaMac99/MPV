@@ -40,8 +40,9 @@ def imshow_torch_channels(tensor, dim=1, *kwargs):
 ######################################################################
 TQDM = True
 VGG16 = True
-LOAD = False
-SAVE = True
+LOAD = True
+TRAIN = False
+SAVE = False
 
 
 # wrapper for get_dataset_statistics()
@@ -244,12 +245,10 @@ def train_and_val_single_epoch(model: torch.nn.Module,
     Do not forget to set the model into train mode and zero_grad() optimizer before backward.
     '''
     model.train()
-    if optim is None:
-        model.eval()
 
     if epoch_idx == 0:
         val_loss, additional_out = validate(model, val_loader, loss_fn, device, additional_params)
-        print("accuracy: {:.2f}% | loss: {:.2f}".format(additional_out['acc']*100, val_loss))
+        print("init accuracy: {:.2f}% | init loss: {:.2f}".format(additional_out['acc']*100, val_loss))
         model = model.to(device)
         # TODO: try tensorboaard?
         # if writer is not None:
@@ -257,20 +256,20 @@ def train_and_val_single_epoch(model: torch.nn.Module,
         #     if 'with_acc' in additional_params and additional_params['with_acc']:
         #         writer.add_scalar("Accuracy/val", additional_out['acc'], 0)
         #     writer.add_scalar("Loss/val", val_loss, 0)
+
     acc = 0
     running_loss = 0
     n_samples = 0
     iterator = tqdm(enumerate(train_loader), total=len(train_loader), desc="training") if TQDM else enumerate(train_loader)
     for idx, (data, labels) in iterator:
-        optimizer.zero_grad()  # reset all gradients of all torch tensors
+        optim.zero_grad()  # reset all gradients of all torch tensors
 
         pred = model(data)
         n_samples += pred.shape[0]
         loss = loss_fn(pred, labels)
 
-        if optim is not None:
-            loss.backward()
-            optimizer.step()
+        loss.backward()
+        optim.step()
 
         running_loss += loss.item()
 
@@ -280,12 +279,27 @@ def train_and_val_single_epoch(model: torch.nn.Module,
         if not TQDM and idx % 50 == 0:
             print(f"Epoch: {epoch_idx} \t Iter: {idx + 1} / {int(len(train_loader.dataset) / train_loader.batch_size) + 1}"
                   f" \t loss: {running_loss / (idx + 1) :.3f}")
-    print()
     print(f"Epoch: {epoch_idx} \t loss: {running_loss / len(train_loader) :.3f}")
 
     loss, acc = validate(model, val_dl, loss_function)
-    print("accuracy: {:.2f}% | loss: {:.2f}".format(acc['acc']*100, loss))
+    print("accuracy: {:.2f}% | loss: {:.2f}\n".format(acc['acc']*100, loss))
     return model
+
+
+# wrapper for lr_find()
+def get_best_lr(model: torch.nn.Module,
+                train_dl:torch.utils.data.DataLoader,
+                loss_fn:torch.nn.Module,
+                min_lr: float=1e-7, max_lr:float=100, steps:int = 50, max_iter:int = 20)-> float:
+
+    losses, lrs = lr_find(model, train_dl, loss_function, min_lr=1e-7, max_lr=1, steps=10, max_iter=5)
+    best_lr = lrs[np.argmin(losses)]
+    print("Best lr so far: ", best_lr)
+
+    losses, lrs = lr_find(model, train_dl, loss_function, min_lr=best_lr/10, max_lr=best_lr*10, steps=10, max_iter=5)
+    best_lr = lrs[np.argmin(losses)]
+    print("Best lr: ", best_lr)
+    return best_lr
 
 
 def lr_find(model: torch.nn.Module,
@@ -296,20 +310,23 @@ def lr_find(model: torch.nn.Module,
     Function, which run the training for a small number of iterations, increasing the learning rate
     and storing the losses. Model initialization is saved before training and restored after training
     '''
+    model.train()
+
     min_lr_log = torch.log10(torch.tensor(min_lr)).item()
     max_lr_log = torch.log10(torch.tensor(max_lr)).item()
 
     lrs = np.logspace(min_lr_log, max_lr_log, steps)
     losses = np.zeros_like(lrs)
+    init_weights = model.state_dict()  # save the model initialization
     for i, lr in enumerate(lrs):
-        new_model = copy.deepcopy(model)
-        optimizer = torch.optim.SGD(new_model.parameters(), lr=lr, momentum=0.9)
+        model.load_state_dict(init_weights)  # restore the model initialization
+        optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
 
         running_loss = 0
-        iterator = tqdm(enumerate(train_dl), total=len(train_dl), desc="training") if TQDM else enumerate(train_dl)
+        iterator = tqdm(enumerate(train_dl), total=max_iter+1, desc="testing lr") if TQDM else enumerate(train_dl)
         for idx, (data, labels) in iterator:
             optimizer.zero_grad()  # reset all gradients of all torch tensors
-            pred = new_model(data)
+            pred = model(data)
 
             loss = loss_fn(pred, labels)
             loss.backward()
@@ -332,27 +349,26 @@ def validate(model: torch.nn.Module,
     '''
     Function, which runs the module over validation set and returns accuracy
     '''
-
     model.eval()
+
+    # do_acc = False
+    # if 'with_acc' in additional_params:
+    #     do_acc = additional_params['with_acc']
+
     acc = 0
     loss = 0
     n_samples = 0
-    do_acc = False
-    if 'with_acc' in additional_params:
-        do_acc = additional_params['with_acc']
     iterator = tqdm(enumerate(val_dl), total=len(val_dl), desc="validating") if TQDM else enumerate(val_dl)
     for idx, (data, labels) in iterator:
         with torch.no_grad():
             batch_output = model(data)
-        n_samples += batch_output.shape[0]
         loss += loss_fn(batch_output, labels).item()
 
         batch_preds = torch.argmax(batch_output, dim=1)
         acc += torch.sum(batch_preds == labels).item()
+        n_samples += batch_output.shape[0]
+
     acc = acc / n_samples
-
-    # print(batch_output)
-
     return loss, {'acc': acc}
 
 
@@ -406,7 +422,8 @@ if __name__ == "__main__":
 
     # include normalisation
     train_tf = tfms.Compose([tfms.Resize((resolution, resolution)),
-                             # tfms.RandomHorizontalFlip(),
+                             tfms.RandomHorizontalFlip(p=0.5),
+                             tfms.RandomResizedCrop(size=(resolution, resolution)),
                              tfms.ToTensor(),
                              tfms.Normalize(mean, std)])
 
@@ -420,7 +437,8 @@ if __name__ == "__main__":
     num_workers = os.cpu_count()
     if 'sched_getaffinity' in dir(os):
         num_workers = len(os.sched_getaffinity(0)) - 2
-    batch_size = 32
+
+    batch_size = 32  # dl. lengths match the number of images in coresp. folders
     train_dl = torch.utils.data.DataLoader(ImageNette_train,
                                            batch_size= batch_size,
                                            shuffle = True, # important thing to do for training.
@@ -429,14 +447,8 @@ if __name__ == "__main__":
                                          batch_size= batch_size,
                                          shuffle = False,
                                          num_workers = num_workers,
-                                         drop_last=False)
-
-    # dl lengths match the number of images in crp. folders
+                                         drop_last=False)  # do not drop the last (smaller) batch for validation
     # batch.shape: [batch_size, 3, resolution, resolution]
-
-    # "drop_last" means drop last batch from the dataset if it is smaller than required batch size.
-    # Might be good thing to do for training, but not for validation.
-
 
     num_classes = len(ImageNette_train.classes)
     learning_rate = 0.001
@@ -452,39 +464,56 @@ if __name__ == "__main__":
     print("Weight_decay: ", weight_decay)
     print("Epochs: ", epochs)
 
-
-    print("Initializing weights...", end=" ")
-    model.features.apply(weight_init)
-    model.clf.apply(weight_init)
-    print("Done.")
-
-    print("Looking for best lr...")
-    losses, lrs = lr_find(model, train_dl, loss_function, min_lr=1e-6, max_lr=1, steps=10, max_iter=5)
-    best_lr = lrs[np.argmin(losses)]
-    print("Best lr so far: ", best_lr)
-    losses, lrs = lr_find(model, train_dl, loss_function, min_lr=best_lr/10, max_lr=best_lr*10, steps=10, max_iter=5)
-    best_lr = lrs[np.argmin(losses)]
-    optimizer = torch.optim.SGD(model.parameters(), lr=best_lr, momentum=0.9)
-    print("Best lr: ", best_lr)
-
     if LOAD:
-        model.load_state_dict(torch.load('weights.pts'))
+        print("Loading weights...")
+        model.load_state_dict(torch.load('weights_vgg16light.pts'))
+    else:
+        print("Initializing weights...")
+        model.features.apply(weight_init)
+        model.clf.apply(weight_init)
 
-    print("Training...")
-    for i in range(epochs):   # one epoch = 30 min for VGG16, good luck
-        model = train_and_val_single_epoch(model, train_dl, val_dl, optimizer, loss_function, i)
-    print("Done.")
+    if TRAIN:
+        print("Looking for best lr...")
+        # vgg16light: 0.0016681005372000575
+        best_lr = get_best_lr(model, train_dl, loss_function)
+        optimizer = torch.optim.SGD(model.parameters(), lr=best_lr, momentum=0.9)
+
+        print("Training...")
+        for i in range(epochs):   # one epoch = 30 min for VGG16, good luck
+            model = train_and_val_single_epoch(model, train_dl, val_dl, optimizer, loss_function, i)
+            if epochs % 10 == 0:
+                best_lr = get_best_lr(model, train_dl, loss_function)
+                optimizer = torch.optim.SGD(model.parameters(), lr=best_lr, momentum=0.9)
+        print("Done.")
 
     if SAVE:
         print("Saving weights...")
         torch.save(model.state_dict(), 'weights.pts')
-        print("Done.")
 
     print("Testing...")
-    test_dl = torch.utils.data.DataLoader(TestFolderDataset('test_set', base_tf))
-    for i, data in enumerate(test_dl):
-        # imshow_torch(data)
+    names = ["tench", "English springer", "cassette player", "chain saw", "church",
+             "French horn", "garbage truck", "gas pump", "golf ball", "parachute"]
+    preds = []
+    model.eval()
+    test_dl = torch.utils.data.DataLoader(TestFolderDataset('test_set', val_tf))
+    display_dl = torch.utils.data.DataLoader(TestFolderDataset('test_set', base_tf))
+    for i, (data, img) in enumerate(zip(test_dl, display_dl)):
+        with torch.no_grad():
+            logits = model(data)
+        y_pred = torch.argmax(logits, dim=1).item()
+        preds.append(y_pred)
+
+        torch.set_printoptions(linewidth=300)
+        # print(logits)
+        print(f"Img no. {i+1}: class {y_pred} --> {names[y_pred]}")
+        # imshow_torch(img)
         # plt.show()
-        pred = model(data)
     print("Done.")
+
+    import csv
+    csv_file = "submission.csv"
+    with open(csv_file, "w", newline="") as file:
+        writer = csv.writer(file)
+        for y in preds:
+            writer.writerow([y])
 
