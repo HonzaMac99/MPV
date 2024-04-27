@@ -493,6 +493,8 @@ if __name__ == "__main__":
     print("Testing...")
     names = ["tench", "English springer", "cassette player", "chain saw", "church",
              "French horn", "garbage truck", "gas pump", "golf ball", "parachute"]
+
+    preds_raw = []
     preds = []
     model.eval()
     test_dl = torch.utils.data.DataLoader(TestFolderDataset('test_set', val_tf))
@@ -501,6 +503,8 @@ if __name__ == "__main__":
         with torch.no_grad():
             logits = model(data)
         y_pred = torch.argmax(logits, dim=1).item()
+
+        preds_raw.append(logits[0].tolist())
         preds.append(y_pred)
 
         torch.set_printoptions(linewidth=300)
@@ -514,6 +518,5 @@ if __name__ == "__main__":
     csv_file = "submission.csv"
     with open(csv_file, "w", newline="") as file:
         writer = csv.writer(file)
-        for y in preds:
-            writer.writerow([y])
+        writer.writerow(preds)
 
