@@ -39,8 +39,8 @@ def imshow_torch_channels(tensor, dim=1, *kwargs):
 #                             Macros                                 #
 ######################################################################
 TQDM = True
-VGG16 = True
 LOAD = True
+VGG16_enable = False
 TRAIN = False
 SAVE = False
 
@@ -80,10 +80,10 @@ def get_dataset_statistics(dataset: torch.utils.data.Dataset) -> Tuple[List, Lis
     return mean_arr, std_arr
 
 
-class SimpleCNN_orig(nn.Module):
+class SimpleCNN(nn.Module):
     """Class, which implements image classifier. """
     def __init__(self, num_classes = 10):
-        super(SimpleCNN_orig, self).__init__()
+        super(SimpleCNN, self).__init__()
         self.features = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=7, stride = 2, padding=3, bias = False),
             nn.BatchNorm2d(32, affine=True),
@@ -128,14 +128,71 @@ class SimpleCNN_orig(nn.Module):
         return self.clf(x)
 
 
-# VGG-16
-class SimpleCNN(nn.Module):
+class SimpleCNN_improved(nn.Module):
     """Class, which implements image classifier. """
     def __init__(self, num_classes = 10):
-        super(SimpleCNN, self).__init__()
+        super(SimpleCNN_improved, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=7, stride = 2, padding=3, bias = False),
+            nn.BatchNorm2d(32, affine=True),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2,2),
+
+            nn.Conv2d(32, 64, kernel_size=5, stride = 2, padding=2, bias = False),
+            nn.BatchNorm2d(64, affine=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=5, stride = 2, padding=2, bias = False),
+            nn.BatchNorm2d(64, affine=True),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2,2),
+
+            nn.Conv2d(64, 128, kernel_size=3, stride = 1, padding=1, bias = False),
+            nn.BatchNorm2d(128, affine=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, stride = 1, padding=1, bias = False),
+            nn.BatchNorm2d(128, affine=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, stride = 1, padding=1, bias = False),
+            nn.BatchNorm2d(128, affine=True),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2,2),
+
+            nn.Conv2d(128, 256, kernel_size=3, stride = 1, padding=1, bias = False),
+            nn.BatchNorm2d(256, affine=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, stride = 2, padding=1, bias = False),
+            nn.BatchNorm2d(256, affine=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 512, kernel_size=3, stride = 2, padding=1, bias = False),
+            nn.BatchNorm2d(512, affine=True),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.1)
+        )
+
+        # clasifier
+        self.clf = nn.Sequential(nn.AdaptiveAvgPool2d(1),
+                                 nn.Flatten(),
+                                 nn.Linear(512, num_classes))
+        return
+
+    def forward(self, input):
+        """
+        Shape:
+        - Input :math:`(B, C, H, W)`
+        - Output: :math:`(B, NC)`, where NC is num_classes
+        """
+        x = self.features(input)
+        return self.clf(x)
+
+
+# VGG-16
+class VGG16(nn.Module):
+    """Class, which implements image classifier. """
+    def __init__(self, num_classes = 10, stride1 = 1):
+        super(VGG16, self).__init__()
         self.features = nn.Sequential(
             # conv block 1 (2x)
-            nn.Conv2d(3, 64, kernel_size=3, stride = 2, padding=1, bias = False),
+            nn.Conv2d(3, 64, kernel_size=3, stride = stride1, padding=1, bias = False),
             nn.BatchNorm2d(64, affine=True),
             nn.ReLU(inplace=True),
             nn.Conv2d(64, 64, kernel_size=3, padding=1, bias = False),
@@ -223,10 +280,10 @@ class SimpleCNN(nn.Module):
 def weight_init(m: nn.Module) -> None:
     '''Function, which fills-in weights and biases for convolutional and linear layers'''
     if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
-        # m.weight.data.uniform_(0.0, 1.0)
-        nn.init.xavier_uniform_(m.weight)
+        # nn.init.xavier_uniform_(m.weight)
+        nn.init.kaiming_uniform_(m.weight, mode='fan_out', nonlinearity='relu')
         if m.bias is not None:
-            m.bias.data.fill_(0.0)
+            nn.init.constant_(m.bias, 0)
     return
 
 
@@ -244,28 +301,30 @@ def train_and_val_single_epoch(model: torch.nn.Module,
     Function, which runs training over a single epoch in the dataloader and returns the model.
     Do not forget to set the model into train mode and zero_grad() optimizer before backward.
     '''
+    model = model.to(device)
     model.train()
+    do_acc = False
+    if 'with_acc' in additional_params:
+        do_acc = additional_params['with_acc']
 
     if epoch_idx == 0:
         val_loss, additional_out = validate(model, val_loader, loss_fn, device, additional_params)
-        print("init accuracy: {:.2f}% | init loss: {:.2f}".format(additional_out['acc']*100, val_loss))
-        model = model.to(device)
-        # TODO: try tensorboaard?
-        # if writer is not None:
-        #     # if do_acc:
-        #     if 'with_acc' in additional_params and additional_params['with_acc']:
-        #         writer.add_scalar("Accuracy/val", additional_out['acc'], 0)
-        #     writer.add_scalar("Loss/val", val_loss, 0)
+        print("\ninit accuracy: {:.2f}% | init loss: {:.2f}\n".format(additional_out['acc']*100, val_loss))
+        if writer is not None:
+            if do_acc:
+                writer.add_scalar("Accuracy/val", additional_out['acc'], 0)
+            writer.add_scalar("Loss/val", val_loss, 0)
 
     acc = 0
     running_loss = 0
     n_samples = 0
     iterator = tqdm(enumerate(train_loader), total=len(train_loader), desc="training") if TQDM else enumerate(train_loader)
     for idx, (data, labels) in iterator:
+        data, labels = data.to(device), labels.to(device)
         optim.zero_grad()  # reset all gradients of all torch tensors
 
         pred = model(data)
-        n_samples += pred.shape[0]
+        n_samples += pred.shape[0]   # increment by batch size
         loss = loss_fn(pred, labels)
 
         loss.backward()
@@ -276,13 +335,25 @@ def train_and_val_single_epoch(model: torch.nn.Module,
         pred_y = torch.argmax(pred, dim=1)
         acc += torch.sum(pred_y == labels).item()
 
+        sample_idx = epoch_idx*len(train_loader) + n_samples/32
+        if writer is not None:
+            if do_acc:
+                writer.add_scalar("Accuracy/train", acc/n_samples, sample_idx)
+            writer.add_scalar("Loss/train", loss.item(), sample_idx)
+
         if not TQDM and idx % 50 == 0:
             print(f"Epoch: {epoch_idx} \t Iter: {idx + 1} / {int(len(train_loader.dataset) / train_loader.batch_size) + 1}"
                   f" \t loss: {running_loss / (idx + 1) :.3f}")
-    print(f"Epoch: {epoch_idx} \t loss: {running_loss / len(train_loader) :.3f}")
+    print(f"Epoch: {epoch_idx} \t loss: {running_loss/len(train_loader) :.3f}")
 
-    loss, acc = validate(model, val_dl, loss_function)
-    print("accuracy: {:.2f}% | loss: {:.2f}\n".format(acc['acc']*100, loss))
+    val_loss, val_acc = validate(model, val_loader, loss_fn, device, additional_params)
+    sample_idx = epoch_idx*len(train_loader) + n_samples/32
+    if writer is not None:
+        if do_acc:
+            writer.add_scalar("Accuracy/val", val_acc['acc'], sample_idx)
+        writer.add_scalar("Loss/val", val_loss, sample_idx)
+    print("\naccuracy: {:.2f}% | loss: {:.2f}\n".format(val_acc['acc']*100, val_loss))
+
     return model
 
 
@@ -323,7 +394,7 @@ def lr_find(model: torch.nn.Module,
         optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
 
         running_loss = 0
-        iterator = tqdm(enumerate(train_dl), total=max_iter+1, desc="testing lr") if TQDM else enumerate(train_dl)
+        iterator = tqdm(enumerate(train_dl), total=max_iter, desc="testing lr") if TQDM else enumerate(train_dl)
         for idx, (data, labels) in iterator:
             optimizer.zero_grad()  # reset all gradients of all torch tensors
             pred = model(data)
@@ -338,6 +409,7 @@ def lr_find(model: torch.nn.Module,
         print("lr: {:.2e} | loss: {:.2f}".format(lr, running_loss / max_iter))
         losses[i] = running_loss / max_iter
 
+    model.load_state_dict(init_weights)  # restore the model initialization
     return losses, lrs
 
 
@@ -349,17 +421,20 @@ def validate(model: torch.nn.Module,
     '''
     Function, which runs the module over validation set and returns accuracy
     '''
+    print("Starting validation")
+    model = model.to(device)
     model.eval()
 
-    # do_acc = False
-    # if 'with_acc' in additional_params:
-    #     do_acc = additional_params['with_acc']
+    do_acc = False
+    if 'with_acc' in additional_params:
+        do_acc = additional_params['with_acc']
 
     acc = 0
     loss = 0
     n_samples = 0
     iterator = tqdm(enumerate(val_dl), total=len(val_dl), desc="validating") if TQDM else enumerate(val_dl)
     for idx, (data, labels) in iterator:
+        data, labels = data.to(device), labels.to(device)
         with torch.no_grad():
             batch_output = model(data)
         loss += loss_fn(batch_output, labels).item()
@@ -376,13 +451,13 @@ class TestFolderDataset(torch.utils.data.Dataset):
     '''Class, which reads images in folder and serves as test dataset'''
 
     def __init__(self, folder_name, transform = None):
-        self.files = os.listdir(folder_name)
+        self.fnames = os.listdir(folder_name)
         self.folder_name = folder_name
         self.transform = transform
         return
 
     def get_fname(self, idx):
-        return os.path.join(self.folder_name, self.files[idx])
+        return os.path.join(self.folder_name, self.fnames[idx])
 
     def __getitem__(self, index):
         img = Image.open(self.get_fname(index))
@@ -391,7 +466,7 @@ class TestFolderDataset(torch.utils.data.Dataset):
         return img
 
     def __len__(self):
-        ln = len(self.files)
+        ln = len(self.fnames)
         return ln
         
 
@@ -402,7 +477,8 @@ def get_predictions(model: torch.nn.Module, test_dl: torch.utils.data.DataLoader
     '''
 
     out = torch.zeros(0).long()
-    for idx, (data, labels) in enumerate(test_dl):
+    iterator = tqdm(enumerate(test_dl), total=len(test_dl), desc="validating") if TQDM else enumerate(val_dl)
+    for idx, data in iterator:
         with torch.no_grad():
             batch_output = model(data)   # 32x10
         batch_preds = torch.argmax(batch_output, dim=1)
@@ -411,7 +487,7 @@ def get_predictions(model: torch.nn.Module, test_dl: torch.utils.data.DataLoader
 
 
 if __name__ == "__main__":
-    resolution = 224 if VGG16 else 128
+    resolution = 224 if VGG16_enable else 128
     base_tf = tfms.Compose([tfms.Resize((resolution, resolution)), tfms.ToTensor()])
     ImageNette_for_statistics = tv.datasets.ImageFolder('imagenette2-160/train', transform=base_tf)
     print("Number of images: ", len(ImageNette_for_statistics))
@@ -454,7 +530,7 @@ if __name__ == "__main__":
     learning_rate = 0.001
     weight_decay = 1e-6
     epochs = 20
-    model = SimpleCNN(num_classes) if VGG16 else SimpleCNN_orig(num_classes)
+    model = VGG16(num_classes) if VGG16_enable else SimpleCNN_improved(num_classes)
     # optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     loss_function = torch.nn.CrossEntropyLoss()
     print("Num_workers: ", num_workers)
