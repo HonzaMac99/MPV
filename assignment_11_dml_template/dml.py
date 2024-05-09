@@ -8,8 +8,10 @@ from scipy.spatial.distance import cdist
 from numpy import loadtxt
 
 ssl._create_default_https_context = ssl._create_unverified_context # fix needed for downloading resnet weights
-device = torch.device('cuda:0') # gpu training is typically much faster if available
+# device = torch.device('cuda:0') # gpu training is typically much faster if available
 # device = torch.device('cpu')
+
+device = torch.device('cuda:0') if torch.cuda.is_avaliable() else torch.device('cpu')
 
 # read the dataset files and return the list of images and list of class labels
 def readCUB(kept_labels, n=1000):
@@ -83,6 +85,7 @@ class CUBtriplet(data.Dataset):
     def minehard(self, model):
         des, labels = self.extract_images(model)
         # mine hard negatives and store them in "self.hardneg" - your code
+        # note: we should store the indexes of the img <-> hard-neg
         # ........
         # ........
         # ........
@@ -97,12 +100,14 @@ class CUBtriplet(data.Dataset):
         img1 = self.transform(img1)
 
         # img1 is the anchor, pick a positve and a hard negative - your code
+        # note: find hard-neg idx of the input indes + and positive image of the same class, which can be found in ...
         # ........
         # ........
         # ........
         # ........
         # ........
-        
+
+        # note: orig, positive, negative
         return (img1, img2, img3)
     
     # this lets the data-loader know how many items are there to use
@@ -236,7 +241,7 @@ def main():
     ])
 
     # these hyper-parameters worked reasonably well for us
-    lr=0.00001
+    lr=0.00001  # for fine tuning
     margin=.1
 
     trainset = CUBtriplet(kept_labels = np.arange(100), n=20, transform = transform_train) # keep only 20 images per class
