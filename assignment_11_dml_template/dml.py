@@ -8,10 +8,10 @@ from scipy.spatial.distance import cdist
 from numpy import loadtxt
 
 ssl._create_default_https_context = ssl._create_unverified_context # fix needed for downloading resnet weights
+
 # device = torch.device('cuda:0') # gpu training is typically much faster if available
 # device = torch.device('cpu')
-
-device = torch.device('cuda:0') if torch.cuda.is_avaliable() else torch.device('cpu')
+device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
 
 # read the dataset files and return the list of images and list of class labels
 def readCUB(kept_labels, n=1000):

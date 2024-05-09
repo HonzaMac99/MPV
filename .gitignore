@@ -2,6 +2,7 @@
 *~
 *.pyc
 *.zip
+*.tgz
 __pycache__
 .venv
 solutions
