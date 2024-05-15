@@ -3,6 +3,7 @@ from scipy.sparse import csr_matrix
 import PIL.Image
 from utils import get_pts_in_box, draw_bbox, vis_results, get_A_matrix_from_geom, get_query_data, get_shortlist_data
 
+
 def create_db(image_visual_words, num_visual_words, idf):
     """
     create the image database with an inverted file represented as a sparse matrix. 
@@ -16,12 +17,11 @@ def create_db(image_visual_words, num_visual_words, idf):
     db: sparse matrix representing the inverted file 
     """
 
-    # create DB here - your code
-    # ........
-    # ........
-    # ........
-    # ........
-    # ........
+    db = np.zeros((num_visual_words, len(image_visual_words)))
+
+    for i, img_vis_w in enumerate(image_visual_words):
+        vec = np.bincount(img_vis_w)
+        db[:, i] = vec / np.linalg.norm(vec)
 
     return db
 
@@ -36,15 +36,14 @@ def get_idf(image_visual_words, num_visual_words):
     idf: array with idf weights per visual word
     """
 
-    # calculate idf here - your code
-    # ........
-    # ........
-    # ........
-    # ........
-    # ........
+    N = len(image_visual_words)
 
+    n_occur = np.zeros(num_visual_words)
+    for i in range(N):
+        n_occur[np.unique(image_visual_words[i])] += 1
+    idf = np.log10(N/n_occur)
+    idf[idf == np.inf] = 0  # for n_occur = 0, idf will be 0
     return idf
-
 
 
 def retrieve(db, query_visual_words, idf):
@@ -67,7 +66,7 @@ def retrieve(db, query_visual_words, idf):
     # ........
     # ........
 
-    return ranking, sim
+    #return ranking, sim
 
 
 def get_tentative_correspondences(query_visual_words, shortlist_visual_words):
@@ -80,17 +79,17 @@ def get_tentative_correspondences(query_visual_words, shortlist_visual_words):
 
     correspondences = []
 
-    for i in range(len(candidatelist_visual_words)): # loop over the provided list of DB images
+    # for i in range(len(candidatelist_visual_words)): # loop over the provided list of DB images
 
-        corr = []
-        
-        #### append correspondences for image i - your code
-        # ......
-        # ......
-        # ......
-        # ......
+    #     corr = []
+    #
+    #     #### append correspondences for image i - your code
+    #     # ......
+    #     # ......
+    #     # ......
+    #     # ......
 
-        correspondences.append(corr)
+    #     correspondences.append(corr)
 
     return correspondences
 
@@ -165,7 +164,7 @@ def main():
     
     include_lab_assignment_2 = False # set to True for the second part - spatial verif.
 
-    with open('mpv_lab_retrieval_data.pkl', 'rb') as handle:
+    with open('data/mpv_lab_retrieval_data.pkl', 'rb') as handle:
         p = pickle.load(handle)     
 
     visual_words = p['visual_words']

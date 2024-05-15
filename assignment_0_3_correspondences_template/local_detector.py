@@ -206,13 +206,13 @@ def scalespace_harris_response(x: torch.Tensor,
       - Output: :math:`(B, C, N_LEVELS, H, W)`, List(floats)
     """
 
-    sigma_i = 2.0  # for 3x3 gaussian kernel , shouldnt be less than 1
+    sigma_i = 3.0  # for 3x3 gaussian kernel, shouldn't be less than 1
     ss, sigmas_d = create_scalespace(x, n_levels, sigma_step)
     out = torch.zeros_like(ss)
     for i in range(n_levels):
         x_blurred = ss[:, :, i, :, :]
         h_response = harris_response(x_blurred, sigmas_d[i], sigma_i)
-        out[:, :, i, :, :] = sigmas_d[i]**2 * h_response
+        out[:, :, i, :, :] = sigmas_d[i]**4 * h_response
         print(f"Got {i}-th harris response")
     return out, sigmas_d
 
@@ -233,6 +233,7 @@ def scalespace_harris(x: torch.Tensor,
       - Output: :math:`(N, 5)`, where N - total number of maxima and 5 is (b,c,d,h,w) coordinates
     """
     # To get coordinates of the responces, you can use torch.nonzero function
+    # Don't forget to convert scale index to scale value with use of sigma
 
     x_harris, sigmas = scalespace_harris_response(x, n_levels, sigma_step)
     print("got x_harris")
@@ -241,7 +242,8 @@ def scalespace_harris(x: torch.Tensor,
     out = torch.nonzero(x_harris_nms3d)
     print(out)
 
-    # todo: Don't forget to convert scale index to scale value with use of sigma
+    for i in range(out.shape[0]):
+        out[i, 2] = sigmas[out[i, 2].item()]
 
     return out
 
@@ -313,7 +315,7 @@ if __name__ == "__main__":
     # keypoint_locations = harris(img_corners, 1.6, 2.0, 0.0001)
     # print(keypoint_locations)
 
-    # nmsed_harris = nms2d(resp_small, 1e-6)
+    nmsed_harris = nms2d(resp_small, 1e-6)
 
     # imshow_torch(nmsed_harris)
 
