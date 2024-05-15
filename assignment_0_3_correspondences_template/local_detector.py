@@ -206,7 +206,7 @@ def scalespace_harris_response(x: torch.Tensor,
       - Output: :math:`(B, C, N_LEVELS, H, W)`, List(floats)
     """
 
-    sigma_i = 2.0  # for 3x3 gaussian kernel
+    sigma_i = 2.0  # for 3x3 gaussian kernel , shouldnt be less than 1
     ss, sigmas_d = create_scalespace(x, n_levels, sigma_step)
     out = torch.zeros_like(ss)
     for i in range(n_levels):
@@ -233,7 +233,6 @@ def scalespace_harris(x: torch.Tensor,
       - Output: :math:`(N, 5)`, where N - total number of maxima and 5 is (b,c,d,h,w) coordinates
     """
     # To get coordinates of the responces, you can use torch.nonzero function
-    # Don't forget to convert scale index to scale value with use of sigma
 
     x_harris, sigmas = scalespace_harris_response(x, n_levels, sigma_step)
     print("got x_harris")
@@ -241,6 +240,9 @@ def scalespace_harris(x: torch.Tensor,
     print("got nms3d")
     out = torch.nonzero(x_harris_nms3d)
     print(out)
+
+    # todo: Don't forget to convert scale index to scale value with use of sigma
+
     return out
 
 
