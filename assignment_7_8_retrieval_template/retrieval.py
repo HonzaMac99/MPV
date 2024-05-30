@@ -2,6 +2,7 @@ import numpy as np, time, datetime, scipy.io, os, pdb, pickle
 from scipy.sparse import csr_matrix
 import PIL.Image
 from utils import get_pts_in_box, draw_bbox, vis_results, get_A_matrix_from_geom, get_query_data, get_shortlist_data
+np.set_printoptions(linewidth=400, threshold=np.inf)
 
 
 def create_db(image_visual_words, num_visual_words, idf):
@@ -17,14 +18,18 @@ def create_db(image_visual_words, num_visual_words, idf):
     db: sparse matrix representing the inverted file 
     """
 
-    # db = np.zeros((num_visual_words, len(image_visual_words)))
-    db = csr_matrix((num_visual_words, len(image_visual_words)))
+    # changing sparsity structure is expensive --> convert at the end
+    # db = csr_matrix((num_visual_words, len(image_visual_words)))
+
+    db = np.zeros((num_visual_words, len(image_visual_words)))
 
     for i, img_vis_w in enumerate(image_visual_words):
-        vec = np.bincount(img_vis_w)
-        db[:, i] = vec / np.linalg.norm(vec)
+        img_vec = np.bincount(img_vis_w, minlength=num_visual_words) * idf
+        if len(img_vis_w) > 0:  # normalize only nonzero vectors
+            img_vec /= np.linalg.norm(img_vec)
+        db[:, i] = img_vec
 
-    # db = csr_matrix(db)
+    db = csr_matrix(db)
 
     return db
 
@@ -45,8 +50,9 @@ def get_idf(image_visual_words, num_visual_words):
     for i in range(N):
         n_i[np.unique(image_visual_words[i])] += 1
 
-    idf = np.log10(N/n_i)
-    idf[idf == np.inf] = 0  # for n_occur = 0, idf will be set to 0
+    idf = np.zeros_like(n_i)
+    n_i_positive = n_i.nonzero()
+    idf[n_i_positive] = np.log(N/n_i[n_i_positive])  # for n_i = 0, we set idf to be 0
 
     return idf
 
@@ -64,13 +70,13 @@ def retrieve(db, query_visual_words, idf):
     sim: sorted list of similarities
     """
 
-    query_vec = query_visual_words * idf
+    query_vec = np.bincount(query_visual_words, minlength=idf.shape[0]) * idf
     query_vec /= np.linalg.norm(query_vec)
 
     scores = query_vec.T @ db
 
-    ranking = np.argsort(scores)
-    sim = np.sort(scores)
+    ranking = np.argsort(-scores)
+    sim = -np.sort(-scores)
 
     return ranking, sim
 
