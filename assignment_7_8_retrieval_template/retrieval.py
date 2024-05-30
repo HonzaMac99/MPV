@@ -17,11 +17,14 @@ def create_db(image_visual_words, num_visual_words, idf):
     db: sparse matrix representing the inverted file 
     """
 
-    db = np.zeros((num_visual_words, len(image_visual_words)))
+    # db = np.zeros((num_visual_words, len(image_visual_words)))
+    db = csr_matrix((num_visual_words, len(image_visual_words)))
 
     for i, img_vis_w in enumerate(image_visual_words):
         vec = np.bincount(img_vis_w)
         db[:, i] = vec / np.linalg.norm(vec)
+
+    # db = csr_matrix(db)
 
     return db
 
@@ -36,13 +39,15 @@ def get_idf(image_visual_words, num_visual_words):
     idf: array with idf weights per visual word
     """
 
-    N = len(image_visual_words)
+    N = len(image_visual_words)       # total number of images
+    n_i = np.zeros(num_visual_words)  # number of occurrences of each visual word in all images
 
-    n_occur = np.zeros(num_visual_words)
     for i in range(N):
-        n_occur[np.unique(image_visual_words[i])] += 1
-    idf = np.log10(N/n_occur)
-    idf[idf == np.inf] = 0  # for n_occur = 0, idf will be 0
+        n_i[np.unique(image_visual_words[i])] += 1
+
+    idf = np.log10(N/n_i)
+    idf[idf == np.inf] = 0  # for n_occur = 0, idf will be set to 0
+
     return idf
 
 
@@ -59,14 +64,15 @@ def retrieve(db, query_visual_words, idf):
     sim: sorted list of similarities
     """
 
-    # serch here - your code
-    # ........
-    # ........
-    # ........
-    # ........
-    # ........
+    query_vec = query_visual_words * idf
+    query_vec /= np.linalg.norm(query_vec)
 
-    #return ranking, sim
+    scores = query_vec.T @ db
+
+    ranking = np.argsort(scores)
+    sim = np.sort(scores)
+
+    return ranking, sim
 
 
 def get_tentative_correspondences(query_visual_words, shortlist_visual_words):

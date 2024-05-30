@@ -3,6 +3,7 @@
 *.pyc
 *.zip
 *.tgz
+*.jpg
 __pycache__
 .venv
 solutions
