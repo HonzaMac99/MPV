@@ -70,7 +70,7 @@ def retrieve(db, query_visual_words, idf):
     sim: sorted list of similarities
     """
 
-    query_vec = np.bincount(query_visual_words, minlength=idf.shape[0]) * idf
+    query_vec = np.bincount(query_visual_words.flatten(), minlength=idf.shape[0]) * idf
     query_vec /= np.linalg.norm(query_vec)
 
     scores = query_vec.T @ db
@@ -91,17 +91,19 @@ def get_tentative_correspondences(query_visual_words, shortlist_visual_words):
 
     correspondences = []
 
-    # for i in range(len(candidatelist_visual_words)): # loop over the provided list of DB images
+    # loop over the provided list of DB images
+    for i, img_visual_words in enumerate(shortlist_visual_words):
 
-    #     corr = []
-    #
-    #     #### append correspondences for image i - your code
-    #     # ......
-    #     # ......
-    #     # ......
-    #     # ......
+        corr = []
+        for j, query_vis_w in enumerate(query_visual_words):
+            img_idx = np.c_[np.where(img_visual_words == query_vis_w)]
+            query_idx = np.ones_like(img_idx) * j
+            corr_arr = np.hstack((query_idx, img_idx))
+            if np.sum(corr_arr.shape) > 0:
+                corr += corr_arr.tolist()
 
-    #     correspondences.append(corr)
+        # append correspondences for image i
+        correspondences.append(corr)
 
     return correspondences
 
@@ -136,13 +138,18 @@ def ransac_affine(query_geometry, shortlist_geometry, correspondences, inlier_th
             Aq = get_A_matrix_from_geom(query_geometry[q_id]) # shape of local feature from the query
             Ad = get_A_matrix_from_geom(shortlist_geometry[k][d_id]) # shape of local feature from DB image
 
-            ### estimate transformation hypothesis A and the number of inliers - your code
-            #
-            # A = .....
-            # ....
-            # ....
-            # number_of_inliers = ....
-            # 
+            # estimate transformation hypothesis A and the number of inliers - your code
+            A = Ad @ np.linalg.inv(Aq)
+
+            x1 = shortlist_geometry[k][corr[:, 1], :2]
+            x2 = query_geometry[corr[:, 0], :2]
+            x2_ones = np.ones((x2.shape[0], 1))
+
+            x2_proj = A @ np.hstack((x2, x2_ones)).T
+            x2_proj = x2_proj[:2].T
+            x_diff = np.linalg.norm(x1 - x2_proj, axis=1)
+
+            number_of_inliers = np.sum(x_diff > inlier_threshold)
 
             if number_of_inliers > best_score:
                 best_score = number_of_inliers
@@ -173,8 +180,9 @@ def search_spatial_verification(query_visual_words, query_geometry, candidatelis
 
 ### ========================================================
 def main():
-    
-    include_lab_assignment_2 = False # set to True for the second part - spatial verif.
+
+    # set to True for the second part - spatial verif.
+    include_lab_assignment_2 = True
 
     with open('data/mpv_lab_retrieval_data.pkl', 'rb') as handle:
         p = pickle.load(handle)     
@@ -188,7 +196,7 @@ def main():
 
     # spatial verification parameters
     shortlist_size = 50
-    inlier_threshold=8
+    inlier_threshold = 8
 
     t = time.time()
     idf = get_idf(visual_words, num_visual_words)
@@ -224,7 +232,6 @@ def main():
 
         # will create fig.png - check it out
         vis_results(img_names, q_id, bbox_xyxy, top_img_ids, scores_sp, transformations)
-
 
 
 if __name__ == '__main__':
