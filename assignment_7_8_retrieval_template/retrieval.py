@@ -149,7 +149,7 @@ def ransac_affine(query_geometry, shortlist_geometry, correspondences, inlier_th
             x2_proj = x2_proj[:2].T
             x_diff = np.linalg.norm(x1 - x2_proj, axis=1)
 
-            number_of_inliers = np.sum(x_diff > inlier_threshold)
+            number_of_inliers = np.sum(x_diff < inlier_threshold)
 
             if number_of_inliers > best_score:
                 best_score = number_of_inliers
@@ -196,7 +196,7 @@ def main():
 
     # spatial verification parameters
     shortlist_size = 50
-    inlier_threshold = 8
+    inlier_threshold = 2  # 8
 
     t = time.time()
     idf = get_idf(visual_words, num_visual_words)
