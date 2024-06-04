@@ -132,13 +132,46 @@ def affine_from_location_and_orientation_and_affshape(b_ch_d_y_x: torch.Tensor,
         - Output: :math:`(B, 3, 3)`, :math:`(B, 1)`
 
     """
-    a12_diff = aff_shape[:, 0].reshape(-1) / 2
-    a11_diff = aff_shape[:, 1].reshape(-1) / 2
-    a21_diff = aff_shape[:, 2].reshape(-1) / 2
+    n_batches = aff_shape.shape[0]
 
-    A, img_idxs = affine_from_location_and_orientation(b_ch_d_y_x, ori)
-    A[:, 0, 1] -= a12_diff
-    A[:, 1, 0] -= a21_diff
+    s = b_ch_d_y_x[:, 2].reshape(-1)
+    y = b_ch_d_y_x[:, 3].reshape(-1)
+    x = b_ch_d_y_x[:, 4].reshape(-1)
+
+    c11 = aff_shape[:, 2].reshape(-1)
+    c12 = aff_shape[:, 1].reshape(-1)
+    c22 = aff_shape[:, 0].reshape(-1)
+
+    C = torch.stack((c11, c12, c12, c22), dim=1).view(n_batches, 2, 2)
+
+    # calc the inverse sqrt of C:
+    C_eigvals, C_eigvecs = torch.linalg.eigh(C)
+    C_eigvals_inv_sqrt = torch.diag_embed(C_eigvals.pow(-0.5))
+    C_inv_sqrt = C_eigvecs @ C_eigvals_inv_sqrt @ C_eigvecs.transpose(-2, -1)
+    C_inv_sqrt_det = torch.linalg.det(C_inv_sqrt).unsqueeze(1).unsqueeze(1)
+
+    A1 = torch.linalg.inv(C_inv_sqrt / (torch.sqrt(C_inv_sqrt_det)))
+    s = s.unsqueeze(1).unsqueeze(1)
+    A1 = s * A1
+
+    A_norm = torch.zeros(n_batches, 3, 3)
+    A_norm[:, 0:2, 0:2] = A1
+    A_norm[:, 0, 2] = x
+    A_norm[:, 1, 2] = y
+    A_norm[:, 2, 2] = 1
+
+    c = torch.cos(ori).reshape(-1)
+    s = torch.sin(ori).reshape(-1)
+
+    R = torch.zeros(n_batches, 3, 3)
+    R[:, 0, 0] = c
+    R[:, 0, 1] = s
+    R[:, 1, 0] = -s
+    R[:, 1, 1] = c
+    R[:, 2, 2] = 1
+
+    A = A_norm @ R
+    img_idxs = b_ch_d_y_x[:, 0].unsqueeze(1).long()
 
     return A, img_idxs
 
@@ -154,7 +187,7 @@ def estimate_patch_dominant_orientation(x: torch.Tensor, num_angular_bins: int =
     Returns:
         angles: (torch.Tensor) in radians shape [Bx1]
     """
-    num_batches = x.shape[0]
+    b, c, h, w = x.shape
 
     # create a weighting gaussian window-function
     center = int(np.floor(x.size(dim=-1)/2))
@@ -169,17 +202,11 @@ def estimate_patch_dominant_orientation(x: torch.Tensor, num_angular_bins: int =
     G_ang = torch.atan2(Gy, Gx)
     G_len = torch.sqrt(Gx**2 + Gy**2) * gauss_mask    # [B, 1, ps, ps] * [B, 1, ps, ps]
 
-    ang_bins_vec = torch.floor((G_ang.flatten(-3) + torch.pi)*(num_angular_bins-1) / (2*torch.pi)).type(torch.long)
+    ang_bins_vec = torch.floor((G_ang.flatten(-3) + torch.pi)*(num_angular_bins-1) / (2*torch.pi)).long()
     len_vec = G_len.flatten(-3)
 
-    # extra check, but should be in the range and not none
-    ang_bins_vec[torch.isnan(ang_bins_vec)] = 0
-    len_vec[torch.isnan(len_vec)] = 0
-    ang_bins_vec[ang_bins_vec < 0] = 0
-    ang_bins_vec[ang_bins_vec > (num_angular_bins-1)] = num_angular_bins-1
-
     # voting implementation
-    hist = torch.zeros((num_batches, num_angular_bins), dtype=torch.float32)
+    hist = torch.zeros((b, num_angular_bins), dtype=torch.float32)
 
     for i in range(ang_bins_vec.shape[-1]):
         vals = len_vec[:, i]
@@ -194,6 +221,25 @@ def estimate_patch_dominant_orientation(x: torch.Tensor, num_angular_bins: int =
 
     max_ang_bin = torch.argmax(hist, dim=-1)
     max_ang = ((max_ang_bin / (num_angular_bins-1)) * 2 * torch.pi) - torch.pi
+
+    # return max_ang
+    # ---------------------------------------------------------------------------
+
+    mags = G_len.squeeze(1)
+    orients = G_ang.squeeze(1)
+
+    histogram = torch.zeros(b, num_angular_bins)
+
+    center = w // 2
+
+    for x in range(w):
+        for y in range(h):
+            for i in range(b):
+                if (x - center)**2 + (y - center)**2 < center**2:
+                    bin = torch.floor(orients[i,y,x] / (torch.pi*2) * num_angular_bins).int()
+                    histogram[i,bin] += mags[i,y,x]
+
+    max_ang = torch.argmax(histogram,dim=1) * torch.pi*2 / num_angular_bins
 
     return max_ang
 
@@ -234,7 +280,6 @@ def calc_sift_descriptor(input: torch.Tensor,
     sb_size = sb_offsets + margin_size * 2
 
     # prepare a weighting gaussian window-function for every subpatch
-    # todo: use the saw w func instead?
     center = int(sb_size // 2)
     gauss_mask = torch.zeros_like(input)
     gauss_mask[..., center, center] = 1
@@ -250,40 +295,58 @@ def calc_sift_descriptor(input: torch.Tensor,
     # ang_bins = torch.floor((G_ang + torch.pi)*(num_ang_bins-1) / (2*torch.pi)).long()
     # lengths = G_len
 
-    # include the extra checks?
-
     hist = torch.zeros((b, num_ang_bins * num_spatial_bins**2), dtype=torch.float32)
 
     for sb_y in range(num_spatial_bins):
         y_offset = sb_y * sb_offsets - margin_size
-        y_s, y_gs = max(y_offset, 0),             max(0, -y_offset)
-        y_e, y_ge = min(y_offset + sb_size, h),   min(sb_size, h-y_offset)
-
+        y_s = max(y_offset, 0)
+        y_e = min(y_offset + sb_size, h)
         # note: computing separate indexes for gauss w-func to be aligned,
         # if the overlapping subpatch is cropped at the side of the image
 
         for sb_x in range(num_spatial_bins):
-            x_offset = sb_x * sb_offsets - margin_size
-            x_s, x_gs = max(x_offset, 0),             max(0, -x_offset)
-            x_e, x_ge = min(x_offset + sb_size, w),   min(sb_size, w-x_offset)
+            x_offset = sb_x * sb_offsets
+            x_s = max(x_offset, 0)
+            x_e = min(x_offset + sb_size, w)
 
             sb_id = (sb_y*num_spatial_bins + sb_x)
-            print(f"computing patch {sb_id}")
+            # print(f"computing patch {sb_id}")
 
             # get the subpatch part of the global ang and len values
             G_ang_sp = G_ang[..., y_s:y_e, x_s:x_e]
             ang_bins = torch.floor((G_ang_sp + torch.pi)*(num_ang_bins-1) / (2*torch.pi)).long()
-            lengths = G_len[..., y_s:y_e, x_s:x_e] * gauss_mask[..., y_gs:y_ge, x_gs:x_ge]
-            # TODO: use G_len[].clone() here?
+            lengths = G_len[..., y_s:y_e, x_s:x_e]
 
             for y in range(y_e-y_s):
                 for x in range(x_e-x_s):
-                    vals = lengths[... , y, x]
-                    bins = ang_bins[... , y, x] + num_ang_bins * sb_id
-                    hist[:, bins] += vals  # increment hist across all batches
+                    center_dist = np.sqrt((x - center)**2 + (y - center)**2)
+                    if center_dist < center:
+                        vals = lengths[... , y, x]
+                        bins = ang_bins[... , y, x] + sb_id * num_ang_bins
+                        hist[:, bins] += vals  # increment hist across all batches
+
+    # return hist
+    # -----------------------------------------------------------------------------------------
+
+    mags = G_len.squeeze(1)
+    orients = G_ang.squeeze(1)
+
+    sb_offsets = int(h // num_spatial_bins)
+    center = w // 2
+
+    hist = torch.zeros(b, num_ang_bins * num_spatial_bins**2)
+
+    for sb_id in range(num_spatial_bins**2):
+        x_off = int(sb_id % num_spatial_bins) * sb_offsets
+        y_off = int(np.floor(sb_id / num_spatial_bins)) * sb_offsets
+        for x in range(sb_offsets):
+            for y in range(sb_offsets):
+                for i in range(b):
+                    if (x - center + x_off)**2 + (y - center + y_off)**2 < center**2:
+                        bin = torch.floor(orients[i,y+y_off,x+x_off] / (2*torch.pi) * num_ang_bins).int() + sb_id*num_ang_bins
+                        hist[i,bin] += mags[i,y+y_off,x+x_off]
 
     return hist
-
 
 def photonorm(x: torch.Tensor):
     """Function, which normalizes the patches such that the mean intensity value per channel will be 0 and the standard deviation will be 1.0. Values outside the range < -3,3> will be set to -3 or 3 respectively
@@ -293,79 +356,27 @@ def photonorm(x: torch.Tensor):
     Returns:
         out: (torch.Tensor) shape [BxCHxHxW]
     """
-    out = x
-    return out
+    x_new = x.clone()
+    b, ch, h, w = x.shape
+
+    # Compute mean and std for each patch
+    means = torch.mean(x_new.view(b, ch, -1), dim=-1, keepdim=True).view(b, ch, 1, 1)
+    stds = torch.std(x_new.view(b, ch, -1), dim=-1, keepdim=True, unbiased=True).view(b, ch, 1, 1)
+
+    # Normalize patches
+    x_new = (x_new - means) / stds
+    x_new = (x_new * 0.2) + 0.5
+
+    return x_new
 
 
 if __name__ == "__main__":
 
-    timg = timg_load('graffiti.ppm', False) / 255.
-    timg_gray = kornia.color.rgb_to_grayscale(timg)
-    imshow_torch(timg)
+    patch = torch.zeros(1, 1, 32, 32)
+    patch[:, :, 16:, :] = 1.0
+    plt.imshow(K.tensor_to_image(patch))
 
-    with torch.no_grad():
-        keypoint_locations = scalespace_harris(timg_gray, 0.00001)
-        visualize_detections(timg_gray * 255., keypoint_locations, increase_scale=16.0)
+    num_ang_bins = 8
+    num_spatial_bins = 4
 
-    A, img_idxs = affine_from_location(keypoint_locations)
-
-    print(f'keypoint_locations={keypoint_locations[100]}')
-    print(f'A={A[100]}')
-
-    idxs = range(100, 105)
-    visualize_detections(timg_gray * 255., keypoint_locations[idxs], increase_scale=6.0)
-    patches = extract_affine_patches(timg, A[idxs], img_idxs[idxs], 32, 6.0 / 2.)
-    # OpenCV visualization treats keypoint scale as diameter, while extract_affine_patches as radius,
-    # therefore we should divide by two to get same area
-
-    imshow_torch_channels(patches, 0)
-
-
-    # def normalize_angle(ang):
-    #     # https://stackoverflow.com/a/22949941/1983544
-    #     return ang - (torch.floor((ang + K.pi) / (2.0 * K.pi))) * 2.0 * K.pi
-
-
-    # def benchmark_orientation_consistency(orienter, patches, PS_out, angles=[15], bins=36):
-    #     import kornia as K
-    #     from kornia.geometry.transform import center_crop, rotate
-    #     from kornia.geometry.conversions import rad2deg, deg2rad
-    #     errors = []
-    #     with torch.no_grad():
-    #         patches_orig_crop = center_crop(patches, (PS_out, PS_out))
-    #         ang_out = normalize_angle(orienter(patches_orig_crop, bins))
-    #         for ang_gt in angles:
-    #             ang_gt = torch.tensor(ang_gt)
-    #             patches_ang = rotate(patches, ang_gt)
-    #             patches_ang_crop = center_crop(patches_ang, (PS_out, PS_out))
-    #             ang_out_ang = normalize_angle(orienter(patches_ang_crop, bins))
-    #             error_aug_cw = normalize_angle(ang_out - deg2rad(ang_gt) - ang_out_ang).abs()
-    #             error_aug_ccw = normalize_angle(ang_out + deg2rad(ang_gt) - ang_out_ang).abs()
-    #             if error_aug_ccw.mean().item() < error_aug_cw.mean().item():
-    #                 error_aug = error_aug_ccw
-    #             else:
-    #                 error_aug = error_aug_cw
-    #             errors.append(error_aug.mean())
-    #             print(f'mean consistency error = {rad2deg(error_aug.mean()):.1f} [deg]')
-    #     return rad2deg(torch.stack(errors).mean())
-
-
-    # dir_fname = 'patches/'
-    # fnames = os.listdir(dir_fname)
-    # angles = [90., 60., 45., 30.]
-    # PS_out = 32
-    # PS = 65
-
-    # angles = [70., 30.]
-    # orienter = estimate_patch_dominant_orientation
-    # with torch.no_grad():
-    #     errors = []
-    #     for f in fnames[::-1]:
-    #         fname = os.path.join(dir_fname, f)
-    #         patches = K.image_to_tensor(np.array(Image.open(fname).convert("L"))).float() / 255.
-    #         patches = patches.reshape(-1, 1, PS, PS)
-    #         err = benchmark_orientation_consistency(orienter, patches, PS_out, angles)
-    #         errors.append(err)
-    #     AVG_ERR = torch.stack(errors).mean().item()
-    #     print(f'Average error = {AVG_ERR:.1f} deg')
-
+    desc = calc_sift_descriptor(patch, num_ang_bins, num_spatial_bins)
