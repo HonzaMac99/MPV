@@ -37,9 +37,9 @@ def kcf_detect(alphaf: np.array, # tracker filter
     # are of order 1e-16 and are there only due to numerical 
     # imprecision: 
     return responses.real
- 
-def kernel_correlation(x1: np.array, 
-                       x2: np.array, 
+
+def kernel_correlation(x1: np.array,  # any image (z)
+                       x2: np.array,  # filter (w)
                        pars: SimpleNamespace): 
 
     c = ifft2( ( fft2(x1).conj() * fft2(x2) ).sum(axis=2) )
@@ -105,30 +105,34 @@ def track_kcf(img_next: np.array,
     z = img_next[y:y+h, x:x+w, :]
 
     # compute responses for z
-    responses = np.zeros_like(z)
-    # find the location of the maximum in the responses, 
-    # From that, compute how the patch has shifted from the previous frame: 
-    dx = 0
-    dy = 0 
-    
-    
+    responses = kcf_detect(S.alphaf, S.x_train, z, pars)
+
+    # find the location of the maximum in the responses
+    max_id = responses.argmax().item()
+    max_cx = max_id % w
+    max_cy = max_id // w
+
+    # From that, compute how the patch has shifted from the previous frame:
+    dx = max_cx - S.cx
+    dy = max_cy - S.cy
+
     # update the position of the bbox: 
     S.x += dx
-    S.y += dy 
+    S.y += dy
     
     # extract the patch from the current image again, using 
-    # new estimate of bbox position 
-    patch_next = np.zeros_like(z)
+    # new estimate of bbox position
+    x, y, w, h = S.x, S.y, S.w, S.h
+    patch_next = img_next[y:y+h, x:x+w, :]
     
     # update the training image S.x_train by patch_next (with adaptation) 
-    S.x_train = 1.0 * S.x_train 
+    S.x_train = pars.gamma*patch_next + (1-pars.gamma)*S.x_train
     
     # recompute alphaf for the updated training image: 
-    # S.alphaf = ... 
-
+    S.alphaf = kcf_train(S.x_train * S.envelope, S.y_response, pars)
 
     # keep responses and current patch in S, to be easily accessible 
     # for inspection
     S.responses = responses
     S.patch_next = patch_next 
-    return dx, dy # just for easy access for testing
+    return dx, dy  # just for easy access for testing

@@ -32,4 +32,5 @@ params['default'] = pars
 
 # want to change some parameters? Do and name it as you like: 
 params['example'] = deepcopy(pars)
-params['example'].rbf_sigma = 3.0
+params['example'].rbf_sigma = 0.7 # 3.0
+# params['example'].gamma = 1.0

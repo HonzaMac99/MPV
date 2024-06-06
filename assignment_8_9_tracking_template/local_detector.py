@@ -1,0 +1,1 @@
+../assignment_0_3_correspondences_template/local_detector.py

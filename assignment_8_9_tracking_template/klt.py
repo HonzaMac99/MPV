@@ -6,6 +6,7 @@ import kornia
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 import typing
 from types import SimpleNamespace
 import matplotlib.pyplot as plt
@@ -15,6 +16,34 @@ def read_image(idx):
     img = cv2.imread(fname)
     img = kornia.color.bgr_to_grayscale(kornia.image_to_tensor(img.astype(np.float32),False))/255.0
     return img
+
+
+def get_pad_patches(img, xs, whs):
+    h, w = img.shape[2:]
+    N = xs.shape[0]
+    PS = whs*2+1
+
+    pad = False
+    if not ((whs <= xs[:, 0]) * (xs[:, 0] < w-whs)).all():
+        print(f"[Warn]: point x-cord out of range [{whs}, {w-whs}], doing padding")
+        pad = True
+    if not ((whs <= xs[:, 1]) * (xs[:, 1] < h-whs)).all():
+        print(f"[Warn]: point y-cord out of range [{whs}, {h-whs}], doing padding")
+        pad = True
+
+    if pad:
+        pad_s = tuple([whs for _ in range(4)])
+        img = F.pad(img, pad_s, mode='constant', value=0)  # creates new img (doesn't change the original)
+
+    patches = torch.zeros(N, 1, PS, PS)
+    for i in range(N):
+        x, y = xs[i].int().tolist()
+        y_min, y_max = y-(1-pad)*whs, y+(1+pad)*whs+1
+        x_min, x_max = x-(1-pad)*whs, x+(1+pad)*whs+1
+        patches[i, ...] = img[..., y_min:y_max, x_min:x_max]
+
+    return patches
+
 
 def get_patches_subpix(img: torch.Tensor, 
                        xs: torch.Tensor, 
@@ -39,10 +68,19 @@ def get_patches_subpix(img: torch.Tensor,
     """
 
     # YOUR_IMPLEMENTATION_START
+    N = xs.shape[0]
     PS = window_hsize*2+1
-    return torch.rand(len(xs), 1, PS, PS)
-    # YOUR_IMPLEMENTATION_END
 
+    # this works only for integer coord changes, but the shifts are never only integers!!!
+    # patches = get_pad_patches(img, xs, window_hsize)
+
+    A = torch.eye(3).repeat(N, 1, 1)
+    A[:, :2, 2] = xs
+    img_idxs = torch.zeros(N, 1)
+    patches = extract_affine_patches(img, A, img_idxs, PS, window_hsize)
+
+    return patches
+    # YOUR_IMPLEMENTATION_END
 
 
 def klt_compute_updates(Ts: torch.Tensor, 
@@ -76,11 +114,32 @@ def klt_compute_updates(Ts: torch.Tensor,
 
     # YOUR_IMPLEMENTATION_START
     N = len(xs) # number of patches 
-    dps = torch.zeros(N, 2) # allocation of result
-    # YOUR_IMPLEMENTATION_END
 
-            
+    dps = torch.zeros(N, 2)   # allocation of result
+
+    # perform one iteration of Klt update
+    xs_new = xs + ps
+
+    Is = get_patches_subpix(img_next, xs_new, window_hsize)
+    dxIs = get_patches_subpix(img_next_gradient[:, :, 0], xs_new, window_hsize)  # [N, 1, PS, PS]
+    dyIs = get_patches_subpix(img_next_gradient[:, :, 1], xs_new, window_hsize)
+
+    errs = torch.zeros(N, 1)
+    for i in range(N):
+        A = torch.hstack((dxIs[i].flatten().view(-1, 1), dyIs[i].flatten().view(-1, 1)))  # [PS**2, 2]
+        b = (Ts[i] - Is[i]).flatten().view(-1, 1)  # [PS**2, 1]
+        dp = torch.linalg.lstsq(A, b).solution
+        dps[i, :] = dp.flatten()
+        errs[i] = ((A @ dp) - b).sum()
+    # print("total error: ", errs.sum())
+
+    # A = torch.stack([dxIs.reshape((N, -1)), dyIs.reshape((N, -1))], dim=2)
+    # b = (Ts - Is).reshape((N, -1)).unsqueeze(-1)
+    # dps = torch.linalg.lstsq(A, b).solution.squeeze(-1)
+
+    # YOUR_IMPLEMENTATION_END
     return dps
+
 
 def track_klt(img_prev: torch.Tensor, 
               img_next: torch.Tensor, 
@@ -99,11 +158,13 @@ def track_klt(img_prev: torch.Tensor,
     
     while iter_count < pars.klt_max_iter:
         dps = klt_compute_updates(Ts, img_next, img_next_gradient, xs, ps, window_hsize)
-        ps += dps 
-        iter_count += 1 
+        ps += dps
+        # print(ps)
+        iter_count += 1
   
     # if an element of dps is smaller then threshold then the point has converged.
     dps_norm2 = (dps**2).sum(axis=1)
+    # print(dps_norm2)
     idx = (dps_norm2 <= pars.klt_stop_thr).nonzero().squeeze() 
     # for further tracking, keep just the converged points: 
     xs_new = xs[idx] + ps[idx] 
@@ -140,7 +201,12 @@ def compute_and_show_homography(pts_fname = 'tracked_points.pt', result_fname = 
     # in the last frame.
 
     # YOUR_IMPLEMENTATION_START
-    correspondences = torch.cat( (xs1, xs1), 1)
+    correspondences = []
+    for i in range(ids0.shape[0]):
+        for j in range(ids1.shape[0]):
+            if ids0[i] == ids1[j]:
+                correspondences.append([xs0[i, 0], xs0[i, 1], xs1[j, 0], xs1[j, 1]])
+    correspondences = torch.tensor(correspondences)
     # YOUR_IMPLEMENTATION_END
 
 

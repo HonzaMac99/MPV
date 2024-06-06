@@ -9,10 +9,12 @@ import torch
 pts_fname = 'kcf_translations.pt'
 # filename for saving the figure showing the coordinates of path of the tracked patch:
 result_fname = 'result_kcf.pdf'
+# result_fname = 'result_kcf_no_adaptation.pdf'
 
-DISPLAY=True
+DISPLAY = True
 
-pars = params['default'] 
+# pars = params['default']
+pars = params['example']
 
 # read the 1st image 
 img = read_image(0) 

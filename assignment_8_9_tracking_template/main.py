@@ -17,7 +17,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
-DISPLAY=True
+DISPLAY = True
+
 
 def show_frame(im, frame_idx, xs):
     plt.imshow(im[0, 0, :, :], cmap='gray')
@@ -48,7 +49,8 @@ point_ids = torch.arange(pointsN)
 points_frame_first = 0, xs, point_ids  # 0=frame_number
 
 img_prev = img_template
-for k in range(1, pars.frameN): 
+for k in range(1, pars.frameN):
+    print(f"frame {k}")
     img_next = read_image(k)
     xs_new, point_ids_new = track_klt(img_prev, img_next, xs, point_ids, pars)
 
